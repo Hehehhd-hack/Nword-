@@ -1,20 +1,40 @@
 --[[
-    Delta Macro Executor v6 — Mobile Fix
-    NO AutomaticSize anywhere. All sizes hardcoded in pixels.
-    Single scrollable canvas. Draggable. Touch + mouse recording.
+    Delta Macro Executor v7
+    Fixes:
+      1. Draggable via transparent TextButton overlay on title bar
+      2. Touch recording uses InputBegan/InputEnded (works when processed=true on mobile)
+      3. Tabs: Main | Settings | Macros — all pre-built, toggled Visible
+      4. Record button turns GREEN and says "● Recording..." when active
 --]]
 
 local UIS     = game:GetService("UserInputService")
 local TS      = game:GetService("TweenService")
 local CoreGui = game:GetService("CoreGui")
+local RS      = game:GetService("RunService")
 
 local VIM
 pcall(function() VIM = game:GetService("VirtualInputManager") end)
 
--- Kill old instance
+-- Kill old
 pcall(function()
-    if CoreGui:FindFirstChild("DMv6") then CoreGui.DMv6:Destroy() end
+    if CoreGui:FindFirstChild("DMv7") then CoreGui.DMv7:Destroy() end
 end)
+
+-- ── Colours ─────────────────────────────
+local BG     = Color3.fromRGB(18,  18,  26)
+local PANEL  = Color3.fromRGB(28,  28,  38)
+local CARD   = Color3.fromRGB(40,  40,  54)
+local BORDER = Color3.fromRGB(55,  55,  75)
+local ACC    = Color3.fromRGB(99,  102, 241)
+local RED    = Color3.fromRGB(239, 68,  68)
+local GREEN  = Color3.fromRGB(34,  197, 94)
+local YELLOW = Color3.fromRGB(234, 179, 8)
+local ORANGE = Color3.fromRGB(249, 115, 22)
+local PURPLE = Color3.fromRGB(139, 92,  246)
+local WHITE  = Color3.new(1,1,1)
+local TEXT   = Color3.fromRGB(220, 220, 235)
+local SUB    = Color3.fromRGB(120, 120, 150)
+local MUTED  = Color3.fromRGB(75,  75,  100)
 
 -- ── Config ──────────────────────────────
 local CFG = {
@@ -25,7 +45,7 @@ local CFG = {
     recMouse   = true,
 }
 
--- ── State ───────────────────────────────
+-- ── Macro State ─────────────────────────
 local MS = {
     recording = false,
     playing   = false,
@@ -35,38 +55,33 @@ local MS = {
     recStart  = 0,
 }
 
--- ── Colours ─────────────────────────────
-local BG     = Color3.fromRGB(18,  18,  26)
-local PANEL  = Color3.fromRGB(28,  28,  38)
-local CARD   = Color3.fromRGB(40,  40,  54)
-local ACC    = Color3.fromRGB(99,  102, 241)
-local RED    = Color3.fromRGB(239, 68,  68)
-local GREEN  = Color3.fromRGB(34,  197, 94)
-local YELLOW = Color3.fromRGB(234, 179, 8)
-local ORANGE = Color3.fromRGB(249, 115, 22)
-local PURPLE = Color3.fromRGB(139, 92,  246)
-local WHITE  = Color3.new(1, 1, 1)
-local TEXT   = Color3.fromRGB(220, 220, 235)
-local SUB    = Color3.fromRGB(120, 120, 150)
-local MUTED  = Color3.fromRGB(75,  75,  100)
-
+-- ── Tween helper ────────────────────────
 local function tw(o, p, t)
-    TS:Create(o, TweenInfo.new(t or 0.15, Enum.EasingStyle.Quart), p):Play()
+    TS:Create(o, TweenInfo.new(t or 0.15, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), p):Play()
+end
+
+-- ── Corner helper ───────────────────────
+local function rnd(p, r)
+    local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, r or 10); c.Parent = p
 end
 
 -- ════════════════════════════════════════
---  GUI
+--  SCREEN GUI
 -- ════════════════════════════════════════
 local gui = Instance.new("ScreenGui")
-gui.Name           = "DMv6"
+gui.Name           = "DMv7"
 gui.Parent         = CoreGui
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.IgnoreGuiInset = true
 gui.ResetOnSpawn   = false
 
--- ── Window shell ────────────────────────
-local WIN_W = 310
-local WIN_H = 460   -- visible height (clips the scroll inside)
+-- ════════════════════════════════════════
+--  MAIN WINDOW
+-- ════════════════════════════════════════
+local WIN_W = 320
+local WIN_H = 480
+local TB_H  = 40
+local TAB_H = 34
 
 local win = Instance.new("Frame")
 win.Name             = "Win"
@@ -76,490 +91,489 @@ win.BorderSizePixel  = 0
 win.Position         = UDim2.new(0, 20, 0, 50)
 win.Size             = UDim2.new(0, WIN_W, 0, WIN_H)
 win.ClipsDescendants = true
+rnd(win, 14)
 
-do -- rounded corners
-    local c = Instance.new("UICorner")
-    c.CornerRadius = UDim.new(0, 14)
-    c.Parent = win
-end
-do -- border stroke
+do
     local s = Instance.new("UIStroke")
-    s.Color = CARD; s.Thickness = 1
+    s.Color = BORDER; s.Thickness = 1
     s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
     s.Parent = win
 end
 
 -- ── Title bar ───────────────────────────
-local TB_H = 38
-
 local titleBar = Instance.new("Frame")
 titleBar.Parent          = win
 titleBar.BackgroundColor3 = PANEL
 titleBar.BorderSizePixel = 0
 titleBar.Position        = UDim2.new(0, 0, 0, 0)
 titleBar.Size            = UDim2.new(1, 0, 0, TB_H)
-titleBar.ZIndex          = 10
-do
-    local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0,14); c.Parent = titleBar
-    -- fill bottom half so corners only show on top
-    local f = Instance.new("Frame")
-    f.Parent = titleBar; f.BackgroundColor3 = PANEL; f.BorderSizePixel = 0
-    f.Position = UDim2.new(0,0,0.5,0); f.Size = UDim2.new(1,0,0.5,0)
-end
+titleBar.ZIndex          = 3
+rnd(titleBar, 14)
+-- Square off bottom half of title bar
+local tbFix = Instance.new("Frame")
+tbFix.Parent = titleBar; tbFix.BackgroundColor3 = PANEL
+tbFix.BorderSizePixel = 0; tbFix.ZIndex = 3
+tbFix.Position = UDim2.new(0,0,0.5,0); tbFix.Size = UDim2.new(1,0,0.5,0)
 
 local titleLbl = Instance.new("TextLabel")
-titleLbl.Parent             = titleBar
-titleLbl.BackgroundTransparency = 1
-titleLbl.Position           = UDim2.new(0, 12, 0, 0)
-titleLbl.Size               = UDim2.new(1, -90, 1, 0)
-titleLbl.Text               = "⬡ Delta Macro"
-titleLbl.TextSize           = 15
-titleLbl.Font               = Enum.Font.GothamBold
-titleLbl.TextColor3         = TEXT
-titleLbl.TextXAlignment     = Enum.TextXAlignment.Left
-titleLbl.TextYAlignment     = Enum.TextYAlignment.Center
-titleLbl.ZIndex             = 11
+titleLbl.Parent = titleBar; titleLbl.BackgroundTransparency = 1
+titleLbl.Position = UDim2.new(0,12,0,0); titleLbl.Size = UDim2.new(1,-90,1,0)
+titleLbl.Text = "⬡  Delta Macro"; titleLbl.TextSize = 15
+titleLbl.Font = Enum.Font.GothamBold; titleLbl.TextColor3 = TEXT
+titleLbl.TextXAlignment = Enum.TextXAlignment.Left
+titleLbl.TextYAlignment = Enum.TextYAlignment.Center
+titleLbl.ZIndex = 5
 
+-- Min / Close buttons
 local function topBtn(txt, xOff, bg, fg)
     local b = Instance.new("TextButton")
     b.Parent = titleBar; b.BackgroundColor3 = bg; b.BorderSizePixel = 0
     b.Position = UDim2.new(1, xOff, 0.5, -12); b.Size = UDim2.new(0, 26, 0, 24)
     b.Text = txt; b.Font = Enum.Font.GothamBold; b.TextSize = 13
-    b.TextColor3 = fg; b.AutoButtonColor = false; b.ZIndex = 11
-    local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0,6); c.Parent = b
+    b.TextColor3 = fg; b.AutoButtonColor = false; b.ZIndex = 6
+    rnd(b, 6)
     local orig = bg
     b.MouseButton1Down:Connect(function() tw(b,{BackgroundColor3=orig:Lerp(WHITE,.25)},.06) end)
-    b.MouseButton1Up:Connect(function()   tw(b,{BackgroundColor3=orig},.12) end)
+    b.MouseButton1Up:Connect(function()   tw(b,{BackgroundColor3=orig},.1) end)
     return b
 end
+local minBtn   = topBtn("─", -58, CARD, SUB)
+local closeBtn = topBtn("✕", -28, RED,  WHITE)
 
-local minBtn   = topBtn("─", -58, CARD,  SUB)
-local closeBtn = topBtn("✕", -28, RED,   WHITE)
+-- ════════════════════════════════════════
+--  DRAG  — transparent TextButton overlay
+--  This is the key fix: a TextButton on top
+--  of the title bar captures touch correctly
+-- ════════════════════════════════════════
+local dragHandle = Instance.new("TextButton")
+dragHandle.Parent             = titleBar
+dragHandle.BackgroundTransparency = 1
+dragHandle.BorderSizePixel    = 0
+dragHandle.Position           = UDim2.new(0, 0, 0, 0)
+dragHandle.Size               = UDim2.new(1, -64, 1, 0)  -- leave room for buttons
+dragHandle.Text               = ""
+dragHandle.AutoButtonColor    = false
+dragHandle.ZIndex             = 7  -- above everything in title bar
 
--- ── Drag ────────────────────────────────
 do
-    local drag, dInp, dStart, dPos = false, nil, nil, nil
-    titleBar.InputBegan:Connect(function(i)
-        if i.UserInputType == Enum.UserInputType.Touch
-        or i.UserInputType == Enum.UserInputType.MouseButton1 then
-            drag = true; dInp = i; dStart = i.Position; dPos = win.Position
+    local dragging = false
+    local dragStart = Vector2.new()
+    local winStart  = Vector2.new()
+
+    dragHandle.InputBegan:Connect(function(inp)
+        if inp.UserInputType == Enum.UserInputType.Touch
+        or inp.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            dragStart = Vector2.new(inp.Position.X, inp.Position.Y)
+            winStart  = Vector2.new(win.Position.X.Offset, win.Position.Y.Offset)
         end
     end)
-    UIS.InputChanged:Connect(function(i)
-        if not drag then return end
-        if i.UserInputType == Enum.UserInputType.Touch
-        or i.UserInputType == Enum.UserInputType.MouseMovement then
-            local d  = i.Position - dStart
+
+    dragHandle.InputChanged:Connect(function(inp)
+        if not dragging then return end
+        if inp.UserInputType == Enum.UserInputType.Touch
+        or inp.UserInputType == Enum.UserInputType.MouseMovement then
+            local dx = inp.Position.X - dragStart.X
+            local dy = inp.Position.Y - dragStart.Y
             local vp = workspace.CurrentCamera.ViewportSize
-            win.Position = UDim2.new(0,
-                math.clamp(dPos.X.Offset + d.X, 0, vp.X - WIN_W), 0,
-                math.clamp(dPos.Y.Offset + d.Y, 0, vp.Y - WIN_H))
+            local nx = math.clamp(winStart.X + dx, 0, vp.X - WIN_W)
+            local ny = math.clamp(winStart.Y + dy, 0, vp.Y - WIN_H)
+            win.Position = UDim2.new(0, nx, 0, ny)
         end
     end)
-    UIS.InputEnded:Connect(function(i) if i == dInp then drag = false end end)
+
+    dragHandle.InputEnded:Connect(function(inp)
+        if inp.UserInputType == Enum.UserInputType.Touch
+        or inp.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = false
+        end
+    end)
 end
 
 -- ════════════════════════════════════════
---  SCROLLING CANVAS
---  Total canvas height = sum of all rows below
---  Each row height is defined before use.
+--  TAB BAR
 -- ════════════════════════════════════════
--- Row heights (px)
-local RH = {
-    spacer       = 8,
-    status       = 30,
-    progress     = 14,
-    loopLbl      = 18,
-    divider      = 1,
-    sectionHdr   = 24,
-    btnRow       = 50,   -- button + 6px padding
-    kvRow        = 22,
-    slider       = 68,
-    toggle       = 44,
-    textbox      = 48,
-    savLoadBtns  = 50,
-    macroItem    = 42,
-    emptyLabel   = 36,
-}
+local tabBar = Instance.new("Frame")
+tabBar.Parent          = win
+tabBar.BackgroundColor3 = PANEL
+tabBar.BorderSizePixel = 0
+tabBar.Position        = UDim2.new(0, 0, 0, TB_H)
+tabBar.Size            = UDim2.new(1, 0, 0, TAB_H)
+tabBar.ZIndex          = 3
 
--- We will calculate total canvas height as we add rows
-local CANVAS_H = 0
-local function addH(h) CANVAS_H = CANVAS_H + h end
+local TABS     = {"Main","Settings","Macros"}
+local tabBtns  = {}
+local tabPages = {}
+local TBW      = math.floor(WIN_W / 3)
 
--- Pre-calculate canvas height
--- Status section
-addH(RH.spacer)
-addH(RH.status)
-addH(RH.progress)
-addH(RH.loopLbl)
-addH(RH.divider)
--- Controls
-addH(RH.spacer)
-addH(RH.sectionHdr)
-addH(RH.btnRow)
-addH(RH.btnRow)
-addH(RH.divider)
--- Info
-addH(RH.spacer)
-addH(RH.sectionHdr)
-addH(RH.kvRow * 4)
-addH(RH.spacer)
-addH(RH.divider)
--- Settings
-addH(RH.spacer)
-addH(RH.sectionHdr)
-addH(RH.slider * 4)
-addH(RH.divider * 3)
-addH(RH.toggle)
-addH(RH.divider)
--- Macros
-addH(RH.spacer)
-addH(RH.sectionHdr)
-addH(RH.textbox)
-addH(RH.savLoadBtns)
-addH(RH.spacer)
-addH(RH.sectionHdr)
-addH(RH.emptyLabel)  -- placeholder for empty list
-addH(RH.spacer * 3)
+for i, name in ipairs(TABS) do
+    local tb = Instance.new("TextButton")
+    tb.Parent          = tabBar
+    tb.BackgroundColor3 = i==1 and ACC or CARD
+    tb.BorderSizePixel = 0
+    tb.Position        = UDim2.new(0, (i-1)*TBW + 2, 0, 3)
+    tb.Size            = UDim2.new(0, TBW-4, 0, TAB_H-6)
+    tb.Text            = name
+    tb.Font            = Enum.Font.GothamBold
+    tb.TextSize        = 12
+    tb.TextColor3      = i==1 and WHITE or SUB
+    tb.AutoButtonColor = false
+    tb.ZIndex          = 4
+    rnd(tb, 7)
+    tabBtns[i] = tb
 
--- Scroll frame
-local scroll = Instance.new("ScrollingFrame")
-scroll.Parent               = win
-scroll.BackgroundTransparency = 1
-scroll.BorderSizePixel      = 0
-scroll.Position             = UDim2.new(0, 0, 0, TB_H)
-scroll.Size                 = UDim2.new(1, 0, 1, -TB_H)
-scroll.CanvasSize           = UDim2.new(0, 0, 0, CANVAS_H)
-scroll.ScrollBarThickness   = 4
-scroll.ScrollBarImageColor3 = CARD
-scroll.ScrollingDirection   = Enum.ScrollingDirection.Y
+    -- Each tab page: full content area below tab bar
+    local PAGE_Y = TB_H + TAB_H
+    local PAGE_H = WIN_H - PAGE_Y
 
--- ════════════════════════════════════════
---  ROW BUILDER  (places elements at Y, advances Y)
--- ════════════════════════════════════════
-local Y = 0   -- current Y cursor inside canvas
-
-local function advance(h)
-    Y = Y + h
+    local scroll = Instance.new("ScrollingFrame")
+    scroll.Parent               = win
+    scroll.BackgroundTransparency = 1
+    scroll.BorderSizePixel      = 0
+    scroll.Position             = UDim2.new(0, 0, 0, PAGE_Y)
+    scroll.Size                 = UDim2.new(1, 0, 0, PAGE_H)
+    scroll.ScrollBarThickness   = 4
+    scroll.ScrollBarImageColor3 = BORDER
+    scroll.ScrollingDirection   = Enum.ScrollingDirection.Y
+    scroll.Visible              = (i == 1)
+    scroll.ZIndex               = 2
+    -- Canvas height will be set per-page after building content
+    tabPages[i] = scroll
 end
 
-local function place(h, bg)
-    local f = Instance.new("Frame")
-    f.Parent          = scroll
-    f.BackgroundColor3 = bg or BG
-    f.BorderSizePixel = 0
-    f.Position        = UDim2.new(0, 0, 0, Y)
-    f.Size            = UDim2.new(1, 0, 0, h)
-    advance(h)
-    return f
+local curTab = 1
+local function switchTab(idx)
+    curTab = idx
+    for i, tb in ipairs(tabBtns) do
+        local on = (i == idx)
+        tw(tb, {BackgroundColor3 = on and ACC or CARD, TextColor3 = on and WHITE or SUB}, .15)
+        tabPages[i].Visible = on
+    end
+end
+for i, tb in ipairs(tabBtns) do
+    tb.MouseButton1Click:Connect(function() switchTab(i) end)
 end
 
 -- ════════════════════════════════════════
---  STATUS ROW
+--  PAGE BUILDER HELPER
+--  Builds into a given ScrollingFrame page
+--  Returns canvas height used
 -- ════════════════════════════════════════
-advance(RH.spacer)
+local function buildPage(sf, buildFn)
+    local y = 0
+    local items = {}
 
-local statusRow = place(RH.status, BG)
-local statusDot = Instance.new("Frame")
-statusDot.Parent          = statusRow
-statusDot.BackgroundColor3 = GREEN
-statusDot.BorderSizePixel = 0
-statusDot.Position        = UDim2.new(0, 12, 0.5, -4)
-statusDot.Size            = UDim2.new(0, 8, 0, 8)
-do local c=Instance.new("UICorner");c.CornerRadius=UDim.new(1,0);c.Parent=statusDot end
+    local function place(h, bg)
+        local f = Instance.new("Frame")
+        f.Parent          = sf
+        f.BackgroundColor3 = bg or BG
+        f.BorderSizePixel = 0
+        f.Position        = UDim2.new(0, 0, 0, y)
+        f.Size            = UDim2.new(1, 0, 0, h)
+        table.insert(items, f)
+        y = y + h
+        return f
+    end
 
-local statusTxt = Instance.new("TextLabel")
-statusTxt.Parent             = statusRow
-statusTxt.BackgroundTransparency = 1
-statusTxt.Position           = UDim2.new(0, 26, 0, 0)
-statusTxt.Size               = UDim2.new(1, -38, 1, 0)
-statusTxt.Text               = "Ready"
-statusTxt.TextSize           = 13
-statusTxt.Font               = Enum.Font.GothamBold
-statusTxt.TextColor3         = GREEN
-statusTxt.TextXAlignment     = Enum.TextXAlignment.Left
-statusTxt.TextYAlignment     = Enum.TextYAlignment.Center
+    local function spacer(h) place(h or 8, BG) end
+    local function divider() place(1, BORDER) end
 
--- Progress bar
-local progRow = place(RH.progress, BG)
-local progOuter = Instance.new("Frame")
-progOuter.Parent          = progRow
-progOuter.BackgroundColor3 = CARD
-progOuter.BorderSizePixel = 0
-progOuter.Position        = UDim2.new(0, 12, 0.5, -3)
-progOuter.Size            = UDim2.new(1, -24, 0, 6)
-do local c=Instance.new("UICorner");c.CornerRadius=UDim.new(1,0);c.Parent=progOuter end
-local progFill = Instance.new("Frame")
-progFill.Parent          = progOuter
-progFill.BackgroundColor3 = ACC
-progFill.BorderSizePixel = 0
-progFill.Size            = UDim2.new(0, 0, 1, 0)
-do local c=Instance.new("UICorner");c.CornerRadius=UDim.new(1,0);c.Parent=progFill end
+    local function hdr(title)
+        local f = place(26, BG)
+        local l = Instance.new("TextLabel")
+        l.Parent=f; l.BackgroundTransparency=1
+        l.Position=UDim2.new(0,12,0,0); l.Size=UDim2.new(1,-24,1,0)
+        l.Text=title; l.TextSize=10; l.Font=Enum.Font.GothamBold
+        l.TextColor3=MUTED; l.TextXAlignment=Enum.TextXAlignment.Left
+        l.TextYAlignment=Enum.TextYAlignment.Center
+    end
 
--- Loop label
-local loopLblRow = place(RH.loopLbl, BG)
-local loopLbl = Instance.new("TextLabel")
-loopLbl.Parent             = loopLblRow
-loopLbl.BackgroundTransparency = 1
-loopLbl.Position           = UDim2.new(0, 0, 0, 0)
-loopLbl.Size               = UDim2.new(1, 0, 1, 0)
-loopLbl.Text               = ""
-loopLbl.TextSize           = 11
-loopLbl.Font               = Enum.Font.Gotham
-loopLbl.TextColor3         = SUB
-loopLbl.TextXAlignment     = Enum.TextXAlignment.Center
-loopLbl.TextYAlignment     = Enum.TextYAlignment.Center
-
-place(RH.divider, CARD)
-
--- ════════════════════════════════════════
---  CONTROLS
--- ════════════════════════════════════════
-advance(RH.spacer)
-
--- Section header helper
-local function sectionHeader(title)
-    local f = place(RH.sectionHdr, BG)
-    local l = Instance.new("TextLabel")
-    l.Parent=f; l.BackgroundTransparency=1
-    l.Position=UDim2.new(0,12,0,0); l.Size=UDim2.new(1,-24,1,0)
-    l.Text=title; l.TextSize=10; l.Font=Enum.Font.GothamBold
-    l.TextColor3=MUTED; l.TextXAlignment=Enum.TextXAlignment.Left
-    l.TextYAlignment=Enum.TextYAlignment.Center
+    local results = buildFn(place, spacer, divider, hdr, y)
+    sf.CanvasSize = UDim2.new(0, 0, 0, y + 20)
+    return results
 end
 
--- Button row helper (2 buttons)
-local function makeBtnRow(def1, def2)
-    local f = place(RH.btnRow, BG)
-    local pad = 12
-    local bw  = math.floor((WIN_W - pad*2 - 8) / 2)
-    local bh  = 40
+-- ════════════════════════════════════════
+--  MAIN PAGE
+-- ════════════════════════════════════════
+local recBtn, playBtn, stopBtn, clrBtn
+local statusDot, statusTxt, progFill, loopLbl
+local vInputs, vDuration, vLoops, vSpeed
 
-    local function mkb(def, xPos)
-        local b = Instance.new("TextButton")
-        b.Parent=f; b.BackgroundColor3=def.bg; b.BorderSizePixel=0
-        b.Position=UDim2.new(0,xPos,0,5); b.Size=UDim2.new(0,bw,0,bh)
-        b.Text=def.txt; b.Font=Enum.Font.GothamBold; b.TextSize=13
-        b.TextColor3=def.fg or WHITE; b.AutoButtonColor=false
-        local c=Instance.new("UICorner");c.CornerRadius=UDim.new(0,9);c.Parent=b
-        local orig=def.bg
-        b.MouseButton1Down:Connect(function() tw(b,{BackgroundColor3=orig:Lerp(WHITE,.22)},.06) end)
+buildPage(tabPages[1], function(place, spacer, divider, hdr)
+    spacer(8)
+
+    -- Status
+    local sRow = place(30, BG)
+    statusDot = Instance.new("Frame")
+    statusDot.Parent=sRow; statusDot.BackgroundColor3=GREEN
+    statusDot.BorderSizePixel=0; statusDot.Position=UDim2.new(0,12,0.5,-4)
+    statusDot.Size=UDim2.new(0,8,0,8)
+    rnd(statusDot, 99)
+    statusTxt = Instance.new("TextLabel")
+    statusTxt.Parent=sRow; statusTxt.BackgroundTransparency=1
+    statusTxt.Position=UDim2.new(0,27,0,0); statusTxt.Size=UDim2.new(1,-40,1,0)
+    statusTxt.Text="Ready"; statusTxt.TextSize=13
+    statusTxt.Font=Enum.Font.GothamBold; statusTxt.TextColor3=GREEN
+    statusTxt.TextXAlignment=Enum.TextXAlignment.Left
+    statusTxt.TextYAlignment=Enum.TextYAlignment.Center
+
+    -- Progress bar
+    local pRow = place(14, BG)
+    local pOuter = Instance.new("Frame")
+    pOuter.Parent=pRow; pOuter.BackgroundColor3=CARD; pOuter.BorderSizePixel=0
+    pOuter.Position=UDim2.new(0,12,0.5,-3); pOuter.Size=UDim2.new(1,-24,0,6)
+    rnd(pOuter, 99)
+    progFill = Instance.new("Frame")
+    progFill.Parent=pOuter; progFill.BackgroundColor3=ACC
+    progFill.BorderSizePixel=0; progFill.Size=UDim2.new(0,0,1,0)
+    rnd(progFill, 99)
+
+    -- Loop label
+    local llRow = place(18, BG)
+    loopLbl = Instance.new("TextLabel")
+    loopLbl.Parent=llRow; loopLbl.BackgroundTransparency=1
+    loopLbl.Position=UDim2.new(0,0,0,0); loopLbl.Size=UDim2.new(1,0,1,0)
+    loopLbl.Text=""; loopLbl.TextSize=11; loopLbl.Font=Enum.Font.Gotham
+    loopLbl.TextColor3=SUB; loopLbl.TextXAlignment=Enum.TextXAlignment.Center
+    loopLbl.TextYAlignment=Enum.TextYAlignment.Center
+
+    divider(); spacer(4)
+
+    -- Buttons helper
+    local function btnPair(def1, def2, h)
+        h = h or 44
+        local f = place(h + 10, BG)
+        local pad = 12
+        local bw  = math.floor((WIN_W - pad*2 - 8) / 2)
+
+        local function mkb(def, xPos)
+            local b = Instance.new("TextButton")
+            b.Parent=f; b.BackgroundColor3=def.bg; b.BorderSizePixel=0
+            b.Position=UDim2.new(0,xPos,0,5); b.Size=UDim2.new(0,bw,0,h)
+            b.Text=def.txt; b.Font=Enum.Font.GothamBold; b.TextSize=13
+            b.TextColor3=def.fg or WHITE; b.AutoButtonColor=false
+            rnd(b, 9)
+            local orig=def.bg
+            b.MouseButton1Down:Connect(function() tw(b,{BackgroundColor3=orig:Lerp(WHITE,.2)},.06) end)
+            b.MouseButton1Up:Connect(function()   tw(b,{BackgroundColor3=orig},.12) end)
+            function b:RC(col) orig=col; b.BackgroundColor3=col end
+            return b
+        end
+        return mkb(def1, pad), mkb(def2, pad+bw+8)
+    end
+
+    hdr("CONTROLS")
+    recBtn,  playBtn = btnPair(
+        {txt="⏺  Record", bg=RED},
+        {txt="▶  Play",   bg=GREEN})
+    stopBtn, clrBtn  = btnPair(
+        {txt="■  Stop",  bg=YELLOW, fg=Color3.fromRGB(20,20,20)},
+        {txt="✕  Clear", bg=ORANGE})
+
+    spacer(4); divider(); spacer(4)
+
+    -- KV info rows
+    local function kv(key, def)
+        local f = place(22, BG)
+        local kl=Instance.new("TextLabel"); kl.Parent=f; kl.BackgroundTransparency=1
+        kl.Position=UDim2.new(0,12,0,0); kl.Size=UDim2.new(0.58,0,1,0)
+        kl.Text=key; kl.TextSize=12; kl.TextColor3=SUB; kl.Font=Enum.Font.Gotham
+        kl.TextXAlignment=Enum.TextXAlignment.Left; kl.TextYAlignment=Enum.TextYAlignment.Center
+        local vl=Instance.new("TextLabel"); vl.Parent=f; vl.BackgroundTransparency=1
+        vl.Position=UDim2.new(0.58,0,0,0); vl.Size=UDim2.new(0.42,-12,1,0)
+        vl.Text=def; vl.TextSize=12; vl.TextColor3=TEXT; vl.Font=Enum.Font.GothamBold
+        vl.TextXAlignment=Enum.TextXAlignment.Right; vl.TextYAlignment=Enum.TextYAlignment.Center
+        return vl
+    end
+
+    hdr("INFO")
+    vInputs   = kv("Inputs recorded", "0")
+    vDuration = kv("Duration",        "0.00s")
+    vLoops    = kv("Loop count",      "1")
+    vSpeed    = kv("Speed",           "1.00×")
+    spacer(8)
+end)
+
+-- ════════════════════════════════════════
+--  SETTINGS PAGE
+-- ════════════════════════════════════════
+buildPage(tabPages[2], function(place, spacer, divider, hdr)
+    spacer(8)
+
+    local function sliderRow(title, minV, maxV, defV, step, fmt, onChange)
+        local f = place(72, PANEL)
+
+        local tl=Instance.new("TextLabel"); tl.Parent=f; tl.BackgroundTransparency=1
+        tl.Position=UDim2.new(0,12,0,7); tl.Size=UDim2.new(0.6,0,0,18)
+        tl.Text=title; tl.TextSize=10; tl.Font=Enum.Font.GothamBold
+        tl.TextColor3=SUB; tl.TextXAlignment=Enum.TextXAlignment.Left
+        tl.TextYAlignment=Enum.TextYAlignment.Center
+
+        local vl=Instance.new("TextLabel"); vl.Parent=f; vl.BackgroundTransparency=1
+        vl.Position=UDim2.new(0.4,0,0,7); vl.Size=UDim2.new(0.6,-12,0,18)
+        vl.Text=fmt(defV); vl.TextSize=15; vl.Font=Enum.Font.GothamBold
+        vl.TextColor3=ACC; vl.TextXAlignment=Enum.TextXAlignment.Right
+        vl.TextYAlignment=Enum.TextYAlignment.Center
+
+        local track=Instance.new("Frame"); track.Parent=f
+        track.BackgroundColor3=CARD; track.BorderSizePixel=0
+        track.Position=UDim2.new(0,12,0,38); track.Size=UDim2.new(1,-24,0,6)
+        rnd(track, 99)
+
+        local fill=Instance.new("Frame"); fill.Parent=track
+        fill.BackgroundColor3=ACC; fill.BorderSizePixel=0
+        fill.Size=UDim2.new((defV-minV)/(maxV-minV),0,1,0)
+        rnd(fill, 99)
+
+        local knob=Instance.new("TextButton"); knob.Parent=track
+        knob.BackgroundColor3=WHITE; knob.BorderSizePixel=0
+        knob.Text=""; knob.AutoButtonColor=false
+        knob.Size=UDim2.new(0,22,0,22)
+        knob.Position=UDim2.new((defV-minV)/(maxV-minV),-11,0.5,-11)
+        rnd(knob, 99)
+
+        local isDrag=false
+        local cur=defV
+
+        local function apply(pct)
+            pct=math.clamp(pct,0,1)
+            cur=math.clamp(math.round((minV+pct*(maxV-minV))/step)*step,minV,maxV)
+            local p=(cur-minV)/(maxV-minV)
+            fill.Size=UDim2.new(p,0,1,0)
+            knob.Position=UDim2.new(p,-11,0.5,-11)
+            vl.Text=fmt(cur)
+            onChange(cur)
+        end
+        local function pOf(pos)
+            local ap=track.AbsolutePosition; local as=track.AbsoluteSize
+            if as.X==0 then return 0 end
+            return (pos.X-ap.X)/as.X
+        end
+
+        knob.InputBegan:Connect(function(i)
+            if i.UserInputType==Enum.UserInputType.Touch or i.UserInputType==Enum.UserInputType.MouseButton1 then isDrag=true end
+        end)
+        track.InputBegan:Connect(function(i)
+            if i.UserInputType==Enum.UserInputType.Touch or i.UserInputType==Enum.UserInputType.MouseButton1 then
+                isDrag=true; apply(pOf(i.Position))
+            end
+        end)
+        UIS.InputChanged:Connect(function(i)
+            if not isDrag then return end
+            if i.UserInputType==Enum.UserInputType.Touch or i.UserInputType==Enum.UserInputType.MouseMovement then apply(pOf(i.Position)) end
+        end)
+        UIS.InputEnded:Connect(function(i)
+            if i.UserInputType==Enum.UserInputType.Touch or i.UserInputType==Enum.UserInputType.MouseButton1 then isDrag=false end
+        end)
+    end
+
+    hdr("LOOP COUNT  (0 = infinite)")
+    sliderRow("LOOP COUNT", 0, 50, 1, 1,
+        function(v) return v==0 and "∞" or tostring(math.floor(v)) end,
+        function(v) CFG.loopCount=math.floor(v); if vLoops then vLoops.Text=v==0 and "∞" or tostring(math.floor(v)) end end)
+    divider()
+
+    hdr("PLAYBACK SPEED")
+    sliderRow("SPEED", 0.25, 4.0, 1.0, 0.25,
+        function(v) return string.format("%.2f×",v) end,
+        function(v) CFG.speedMult=v; if vSpeed then vSpeed.Text=string.format("%.2f×",v) end end)
+    divider()
+
+    hdr("START DELAY (seconds)")
+    sliderRow("START DELAY", 0, 10, 0, 0.5,
+        function(v) return string.format("%.1fs",v) end,
+        function(v) CFG.startDelay=v end)
+    divider()
+
+    hdr("LOOP DELAY (seconds)")
+    sliderRow("LOOP DELAY", 0, 10, 0, 0.5,
+        function(v) return string.format("%.1fs",v) end,
+        function(v) CFG.loopDelay=v end)
+    divider(); spacer(4)
+
+    -- Toggle
+    hdr("OPTIONS")
+    local tRow = place(44, PANEL)
+    do
+        local tl=Instance.new("TextLabel"); tl.Parent=tRow; tl.BackgroundTransparency=1
+        tl.Position=UDim2.new(0,12,0,0); tl.Size=UDim2.new(1,-66,1,0)
+        tl.Text="Record PC mouse clicks"; tl.TextSize=13; tl.TextColor3=TEXT
+        tl.Font=Enum.Font.Gotham; tl.TextXAlignment=Enum.TextXAlignment.Left
+        tl.TextYAlignment=Enum.TextYAlignment.Center
+
+        local state=CFG.recMouse
+        local tog=Instance.new("TextButton"); tog.Parent=tRow
+        tog.Size=UDim2.new(0,46,0,26); tog.Position=UDim2.new(1,-58,0.5,-13)
+        tog.BackgroundColor3=state and ACC or CARD; tog.BorderSizePixel=0
+        tog.Text=""; tog.AutoButtonColor=false; rnd(tog,99)
+        local kn=Instance.new("Frame"); kn.Parent=tog; kn.BackgroundColor3=WHITE
+        kn.BorderSizePixel=0; kn.Size=UDim2.new(0,20,0,20)
+        kn.Position=state and UDim2.new(1,-23,0.5,-10) or UDim2.new(0,3,0.5,-10)
+        rnd(kn,99)
+        tog.MouseButton1Click:Connect(function()
+            state=not state; CFG.recMouse=state
+            tw(tog,{BackgroundColor3=state and ACC or CARD},.15)
+            tw(kn,{Position=state and UDim2.new(1,-23,0.5,-10) or UDim2.new(0,3,0.5,-10)},.15)
+        end)
+    end
+    spacer(8)
+end)
+
+-- ════════════════════════════════════════
+--  MACROS PAGE
+-- ════════════════════════════════════════
+local nameBox, saveBtn, loadBtn
+local macroListSF  -- scroll frame holding macro list items
+local macroItems = {}
+
+buildPage(tabPages[3], function(place, spacer, divider, hdr, startY)
+    spacer(8)
+    hdr("MACRO NAME")
+
+    local nbRow = place(46, BG)
+    nameBox = Instance.new("TextBox")
+    nameBox.Parent=nbRow; nameBox.BackgroundColor3=CARD; nameBox.BorderSizePixel=0
+    nameBox.Position=UDim2.new(0,12,0,6); nameBox.Size=UDim2.new(1,-24,0,34)
+    nameBox.Font=Enum.Font.Gotham; nameBox.PlaceholderText="Macro name…"
+    nameBox.PlaceholderColor3=MUTED; nameBox.Text=""
+    nameBox.TextColor3=TEXT; nameBox.TextSize=13; nameBox.ClearTextOnFocus=false
+    rnd(nameBox,8)
+    do local p=Instance.new("UIPadding"); p.PaddingLeft=UDim.new(0,10); p.Parent=nameBox end
+
+    -- Save / Load buttons
+    local bRow = place(54, BG)
+    local pad=12; local bw=math.floor((WIN_W-pad*2-8)/2)
+    local function mkb(txt, xPos, bg)
+        local b=Instance.new("TextButton"); b.Parent=bRow
+        b.BackgroundColor3=bg; b.BorderSizePixel=0
+        b.Position=UDim2.new(0,xPos,0,5); b.Size=UDim2.new(0,bw,0,44)
+        b.Text=txt; b.Font=Enum.Font.GothamBold; b.TextSize=13
+        b.TextColor3=WHITE; b.AutoButtonColor=false; rnd(b,9)
+        local orig=bg
+        b.MouseButton1Down:Connect(function() tw(b,{BackgroundColor3=orig:Lerp(WHITE,.2)},.06) end)
         b.MouseButton1Up:Connect(function()   tw(b,{BackgroundColor3=orig},.12) end)
-        function b:RC(col) orig=col; b.BackgroundColor3=col end
         return b
     end
+    saveBtn = mkb("💾  Save", pad,       ACC)
+    loadBtn = mkb("📂  Load", pad+bw+8,  PURPLE)
 
-    local b1 = mkb(def1, pad)
-    local b2 = mkb(def2, pad + bw + 8)
-    return b1, b2
-end
+    spacer(4); divider(); spacer(4)
+    hdr("SAVED MACROS")
 
-sectionHeader("CONTROLS")
+    -- Scrollable inner list for macros
+    -- We place a fixed-height inner ScrollingFrame here
+    local listRow = place(260, BG)
+    macroListSF = Instance.new("ScrollingFrame")
+    macroListSF.Parent=listRow; macroListSF.BackgroundTransparency=1
+    macroListSF.BorderSizePixel=0
+    macroListSF.Position=UDim2.new(0,0,0,0); macroListSF.Size=UDim2.new(1,0,1,0)
+    macroListSF.ScrollBarThickness=3; macroListSF.ScrollBarImageColor3=BORDER
+    macroListSF.ScrollingDirection=Enum.ScrollingDirection.Y
+    macroListSF.CanvasSize=UDim2.new(0,0,0,0)
 
-local recBtn,  playBtn  = makeBtnRow(
-    {txt="⏺  Record", bg=RED},
-    {txt="▶  Play",   bg=GREEN})
-local stopBtn, clrBtn   = makeBtnRow(
-    {txt="■  Stop",  bg=YELLOW, fg=Color3.fromRGB(20,20,20)},
-    {txt="✕  Clear", bg=ORANGE})
-
-place(RH.divider, CARD)
-
--- ════════════════════════════════════════
---  INFO ROWS
--- ════════════════════════════════════════
-advance(RH.spacer)
-sectionHeader("INFO")
-
-local function kvRow(key, def)
-    local f = place(RH.kvRow, BG)
-    local kl = Instance.new("TextLabel")
-    kl.Parent=f; kl.BackgroundTransparency=1
-    kl.Position=UDim2.new(0,12,0,0); kl.Size=UDim2.new(0.58,0,1,0)
-    kl.Text=key; kl.TextSize=12; kl.TextColor3=SUB
-    kl.Font=Enum.Font.Gotham; kl.TextXAlignment=Enum.TextXAlignment.Left
-    kl.TextYAlignment=Enum.TextYAlignment.Center
-    local vl = Instance.new("TextLabel")
-    vl.Parent=f; vl.BackgroundTransparency=1
-    vl.Position=UDim2.new(0.58,0,0,0); vl.Size=UDim2.new(0.42,-12,1,0)
-    vl.Text=def; vl.TextSize=12; vl.TextColor3=TEXT
-    vl.Font=Enum.Font.GothamBold; vl.TextXAlignment=Enum.TextXAlignment.Right
-    vl.TextYAlignment=Enum.TextYAlignment.Center
-    return vl
-end
-
-local vInputs   = kvRow("Inputs recorded", "0")
-local vDuration = kvRow("Duration",        "0.00s")
-local vLoops    = kvRow("Loop count",      "1")
-local vSpeed    = kvRow("Speed",           "1.00×")
-
-advance(RH.spacer)
-place(RH.divider, CARD)
-
--- ════════════════════════════════════════
---  SETTINGS — SLIDERS
--- ════════════════════════════════════════
-advance(RH.spacer)
-sectionHeader("SETTINGS")
-
-local function sliderRow(title, minV, maxV, defV, step, fmt, onChange)
-    local f = place(RH.slider, PANEL)
-
-    local tl = Instance.new("TextLabel")
-    tl.Parent=f; tl.BackgroundTransparency=1
-    tl.Position=UDim2.new(0,12,0,6); tl.Size=UDim2.new(0.55,0,0,18)
-    tl.Text=title; tl.TextSize=10; tl.Font=Enum.Font.GothamBold
-    tl.TextColor3=SUB; tl.TextXAlignment=Enum.TextXAlignment.Left
-    tl.TextYAlignment=Enum.TextYAlignment.Center
-
-    local vl = Instance.new("TextLabel")
-    vl.Parent=f; vl.BackgroundTransparency=1
-    vl.Position=UDim2.new(0.45,0,0,6); vl.Size=UDim2.new(0.55,-12,0,18)
-    vl.Text=fmt(defV); vl.TextSize=15; vl.Font=Enum.Font.GothamBold
-    vl.TextColor3=ACC; vl.TextXAlignment=Enum.TextXAlignment.Right
-    vl.TextYAlignment=Enum.TextYAlignment.Center
-
-    local track = Instance.new("Frame")
-    track.Parent=f; track.BackgroundColor3=CARD; track.BorderSizePixel=0
-    track.Position=UDim2.new(0,12,0,36); track.Size=UDim2.new(1,-24,0,6)
-    do local c=Instance.new("UICorner");c.CornerRadius=UDim.new(1,0);c.Parent=track end
-
-    local fill = Instance.new("Frame")
-    fill.Parent=track; fill.BackgroundColor3=ACC; fill.BorderSizePixel=0
-    fill.Size=UDim2.new((defV-minV)/(maxV-minV),0,1,0)
-    do local c=Instance.new("UICorner");c.CornerRadius=UDim.new(1,0);c.Parent=fill end
-
-    local knob = Instance.new("TextButton")
-    knob.Parent=track; knob.BackgroundColor3=WHITE; knob.BorderSizePixel=0
-    knob.Text=""; knob.AutoButtonColor=false
-    knob.Size=UDim2.new(0,22,0,22)
-    knob.Position=UDim2.new((defV-minV)/(maxV-minV),-11,0.5,-11)
-    do local c=Instance.new("UICorner");c.CornerRadius=UDim.new(1,0);c.Parent=knob end
-
-    local isDrag = false
-    local cur    = defV
-
-    local function apply(pct)
-        pct = math.clamp(pct, 0, 1)
-        cur = math.clamp(math.round((minV + pct*(maxV-minV)) / step) * step, minV, maxV)
-        local p = (cur-minV)/(maxV-minV)
-        fill.Size     = UDim2.new(p, 0, 1, 0)
-        knob.Position = UDim2.new(p, -11, 0.5, -11)
-        vl.Text       = fmt(cur)
-        onChange(cur)
-    end
-    local function pctOf(pos)
-        local ap = track.AbsolutePosition
-        local as = track.AbsoluteSize
-        if as.X == 0 then return 0 end
-        return (pos.X - ap.X) / as.X
-    end
-
-    knob.InputBegan:Connect(function(i)
-        if i.UserInputType==Enum.UserInputType.Touch or i.UserInputType==Enum.UserInputType.MouseButton1 then
-            isDrag=true
-        end
-    end)
-    track.InputBegan:Connect(function(i)
-        if i.UserInputType==Enum.UserInputType.Touch or i.UserInputType==Enum.UserInputType.MouseButton1 then
-            isDrag=true; apply(pctOf(i.Position))
-        end
-    end)
-    UIS.InputChanged:Connect(function(i)
-        if not isDrag then return end
-        if i.UserInputType==Enum.UserInputType.Touch or i.UserInputType==Enum.UserInputType.MouseMovement then
-            apply(pctOf(i.Position))
-        end
-    end)
-    UIS.InputEnded:Connect(function(i)
-        if i.UserInputType==Enum.UserInputType.Touch or i.UserInputType==Enum.UserInputType.MouseButton1 then
-            isDrag=false
-        end
-    end)
-end
-
-sliderRow("LOOP COUNT  (0 = ∞)", 0, 50, 1, 1,
-    function(v) return v==0 and "∞" or tostring(math.floor(v)) end,
-    function(v) CFG.loopCount=math.floor(v); vLoops.Text=v==0 and "∞" or tostring(math.floor(v)) end)
-place(RH.divider, CARD)
-
-sliderRow("PLAYBACK SPEED", 0.25, 4.0, 1.0, 0.25,
-    function(v) return string.format("%.2f×",v) end,
-    function(v) CFG.speedMult=v; vSpeed.Text=string.format("%.2f×",v) end)
-place(RH.divider, CARD)
-
-sliderRow("START DELAY (seconds)", 0, 10, 0, 0.5,
-    function(v) return string.format("%.1fs",v) end,
-    function(v) CFG.startDelay=v end)
-place(RH.divider, CARD)
-
-sliderRow("LOOP DELAY (seconds)", 0, 10, 0, 0.5,
-    function(v) return string.format("%.1fs",v) end,
-    function(v) CFG.loopDelay=v end)
-place(RH.divider, CARD)
-
--- Toggle
-local toggleRow = place(RH.toggle, PANEL)
-do
-    local tl = Instance.new("TextLabel")
-    tl.Parent=toggleRow; tl.BackgroundTransparency=1
-    tl.Position=UDim2.new(0,12,0,0); tl.Size=UDim2.new(1,-66,1,0)
-    tl.Text="Record PC mouse clicks"; tl.TextSize=13; tl.TextColor3=TEXT
-    tl.Font=Enum.Font.Gotham; tl.TextXAlignment=Enum.TextXAlignment.Left
-    tl.TextYAlignment=Enum.TextYAlignment.Center
-
-    local state=CFG.recMouse
-    local tog=Instance.new("TextButton")
-    tog.Parent=toggleRow; tog.Size=UDim2.new(0,46,0,26)
-    tog.Position=UDim2.new(1,-58,0.5,-13)
-    tog.BackgroundColor3=state and ACC or CARD
-    tog.BorderSizePixel=0; tog.Text=""; tog.AutoButtonColor=false
-    do local c=Instance.new("UICorner");c.CornerRadius=UDim.new(1,0);c.Parent=tog end
-
-    local kn=Instance.new("Frame"); kn.Parent=tog; kn.BackgroundColor3=WHITE
-    kn.BorderSizePixel=0; kn.Size=UDim2.new(0,20,0,20)
-    kn.Position=state and UDim2.new(1,-23,0.5,-10) or UDim2.new(0,3,0.5,-10)
-    do local c=Instance.new("UICorner");c.CornerRadius=UDim.new(1,0);c.Parent=kn end
-
-    tog.MouseButton1Click:Connect(function()
-        state=not state; CFG.recMouse=state
-        tw(tog,{BackgroundColor3=state and ACC or CARD},.15)
-        tw(kn,{Position=state and UDim2.new(1,-23,0.5,-10) or UDim2.new(0,3,0.5,-10)},.15)
-    end)
-end
-
-place(RH.divider, CARD)
-
--- ════════════════════════════════════════
---  MACROS SECTION
--- ════════════════════════════════════════
-advance(RH.spacer)
-sectionHeader("SAVE / LOAD MACRO")
-
--- Name textbox
-local nameboxRow = place(RH.textbox, BG)
-local nameBox = Instance.new("TextBox")
-nameBox.Parent=nameboxRow; nameBox.BackgroundColor3=CARD; nameBox.BorderSizePixel=0
-nameBox.Position=UDim2.new(0,12,0,7); nameBox.Size=UDim2.new(1,-24,0,34)
-nameBox.Font=Enum.Font.Gotham; nameBox.PlaceholderText="Macro name…"
-nameBox.PlaceholderColor3=MUTED; nameBox.Text=""
-nameBox.TextColor3=TEXT; nameBox.TextSize=13; nameBox.ClearTextOnFocus=false
-do local c=Instance.new("UICorner");c.CornerRadius=UDim.new(0,8);c.Parent=nameBox end
-do
-    local p=Instance.new("UIPadding"); p.PaddingLeft=UDim.new(0,10); p.Parent=nameBox
-end
-
--- Save / Load buttons
-local saveBtn, loadBtn = makeBtnRow(
-    {txt="💾  Save", bg=ACC},
-    {txt="📂  Load", bg=PURPLE})
-
-advance(RH.spacer)
-sectionHeader("SAVED MACROS")
-
--- The macro list items will be placed dynamically below this Y
--- We track where the list starts
-local macroListY = Y
+    spacer(8)
+end)
 
 -- ════════════════════════════════════════
 --  FAB
@@ -569,23 +583,25 @@ fab.Name="FAB"; fab.Parent=gui; fab.BackgroundColor3=ACC; fab.BorderSizePixel=0
 fab.Position=UDim2.new(0,20,0,50); fab.Size=UDim2.new(0,48,0,48)
 fab.Font=Enum.Font.GothamBold; fab.Text="M"; fab.TextColor3=WHITE
 fab.TextSize=20; fab.Visible=false; fab.AutoButtonColor=false
-do local c=Instance.new("UICorner");c.CornerRadius=UDim.new(1,0);c.Parent=fab end
+rnd(fab,99)
 
 do -- FAB drag
-    local drag,dInp,dStart,dPos=false,nil,nil,nil
+    local dragging=false; local dStart=Vector2.new(); local dPos=Vector2.new()
     fab.InputBegan:Connect(function(i)
         if i.UserInputType==Enum.UserInputType.Touch or i.UserInputType==Enum.UserInputType.MouseButton1 then
-            drag=true;dInp=i;dStart=i.Position;dPos=fab.Position
+            dragging=true; dStart=Vector2.new(i.Position.X,i.Position.Y)
+            dPos=Vector2.new(fab.Position.X.Offset,fab.Position.Y.Offset)
         end
     end)
-    UIS.InputChanged:Connect(function(i)
-        if not drag then return end
+    fab.InputChanged:Connect(function(i)
+        if not dragging then return end
         if i.UserInputType==Enum.UserInputType.Touch or i.UserInputType==Enum.UserInputType.MouseMovement then
-            local d=i.Position-dStart
-            fab.Position=UDim2.new(0,dPos.X.Offset+d.X,0,dPos.Y.Offset+d.Y)
+            fab.Position=UDim2.new(0,dPos.X+(i.Position.X-dStart.X),0,dPos.Y+(i.Position.Y-dStart.Y))
         end
     end)
-    UIS.InputEnded:Connect(function(i) if i==dInp then drag=false end end)
+    fab.InputEnded:Connect(function(i)
+        if i.UserInputType==Enum.UserInputType.Touch or i.UserInputType==Enum.UserInputType.MouseButton1 then dragging=false end
+    end)
 end
 
 local function openWin()
@@ -600,7 +616,6 @@ local function hideWin()
         fab.Position=UDim2.new(0,win.Position.X.Offset,0,win.Position.Y.Offset)
     end)
 end
-
 minBtn.MouseButton1Click:Connect(hideWin)
 closeBtn.MouseButton1Click:Connect(function() gui:Destroy() end)
 fab.MouseButton1Click:Connect(openWin)
@@ -609,104 +624,84 @@ fab.MouseButton1Click:Connect(openWin)
 --  MACRO SYSTEM
 -- ════════════════════════════════════════
 local function setStatus(txt, col)
-    col = col or GREEN
-    statusTxt.Text = txt
-    tw(statusTxt, {TextColor3=col}, .15)
-    tw(statusDot,  {BackgroundColor3=col}, .15)
+    col=col or GREEN
+    statusTxt.Text=txt
+    tw(statusTxt,{TextColor3=col},.15)
+    tw(statusDot,{BackgroundColor3=col},.15)
 end
 
 local function setProgress(pct)
-    tw(progFill, {Size=UDim2.new(math.clamp(pct,0,1),0,1,0)}, .1)
+    tw(progFill,{Size=UDim2.new(math.clamp(pct,0,1),0,1,0)},.1)
 end
 
 local function updateInfo()
-    local n = #MS.inputs
-    vInputs.Text   = tostring(n)
-    vDuration.Text = n>0 and string.format("%.2fs", MS.inputs[n].time) or "0.00s"
+    local n=#MS.inputs
+    vInputs.Text  =tostring(n)
+    vDuration.Text=n>0 and string.format("%.2fs",MS.inputs[n].time) or "0.00s"
 end
 
--- Macro list rebuilder
-local macroItems = {}  -- holds frames so we can destroy them
-
 local function refreshMacroList()
-    -- destroy old items
-    for _, f in ipairs(macroItems) do f:Destroy() end
-    macroItems = {}
+    -- Destroy old items
+    for _,f in ipairs(macroItems) do pcall(function() f:Destroy() end) end
+    macroItems={}
 
-    local itemY = macroListY
-    local count = 0
+    local iy=4
+    local count=0
 
     for name, data in pairs(MS.macros) do
-        count = count + 1
-        local itemH = RH.macroItem
+        count=count+1
+        local IH=40
+        local row=Instance.new("Frame"); row.Parent=macroListSF
+        row.BackgroundColor3=CARD; row.BorderSizePixel=0
+        row.Position=UDim2.new(0,8,0,iy); row.Size=UDim2.new(1,-16,0,IH-4)
+        rnd(row,8); table.insert(macroItems,row)
 
-        local row = Instance.new("Frame")
-        row.Parent           = scroll
-        row.BackgroundColor3 = CARD
-        row.BorderSizePixel  = 0
-        row.Position         = UDim2.new(0, 12, 0, itemY)
-        row.Size             = UDim2.new(1, -24, 0, itemH - 4)
-        do local c=Instance.new("UICorner");c.CornerRadius=UDim.new(0,8);c.Parent=row end
-
-        table.insert(macroItems, row)
-
-        local nl = Instance.new("TextLabel"); nl.Parent=row
-        nl.BackgroundTransparency=1; nl.Position=UDim2.new(0,10,0,0); nl.Size=UDim2.new(1,-80,1,0)
+        local nl=Instance.new("TextLabel"); nl.Parent=row; nl.BackgroundTransparency=1
+        nl.Position=UDim2.new(0,10,0,0); nl.Size=UDim2.new(1,-80,1,0)
         nl.Text=name; nl.TextSize=12; nl.Font=Enum.Font.GothamBold; nl.TextColor3=TEXT
         nl.TextXAlignment=Enum.TextXAlignment.Left; nl.TextYAlignment=Enum.TextYAlignment.Center
 
-        local cl = Instance.new("TextLabel"); cl.Parent=row
-        cl.BackgroundTransparency=1; cl.Position=UDim2.new(1,-80,0,0); cl.Size=UDim2.new(0,46,1,0)
+        local cl=Instance.new("TextLabel"); cl.Parent=row; cl.BackgroundTransparency=1
+        cl.Position=UDim2.new(1,-80,0,0); cl.Size=UDim2.new(0,46,1,0)
         cl.Text=#data.inputs.." ev"; cl.TextSize=11; cl.Font=Enum.Font.Gotham; cl.TextColor3=SUB
         cl.TextXAlignment=Enum.TextXAlignment.Right; cl.TextYAlignment=Enum.TextYAlignment.Center
 
-        local delB = Instance.new("TextButton"); delB.Parent=row
+        local delB=Instance.new("TextButton"); delB.Parent=row
         delB.BackgroundColor3=Color3.fromRGB(55,18,18); delB.BorderSizePixel=0
-        delB.Position=UDim2.new(1,-32,0.5,-14); delB.Size=UDim2.new(0,28,0,28)
+        delB.Position=UDim2.new(1,-32,0.5,-13); delB.Size=UDim2.new(0,26,0,26)
         delB.Text="✕"; delB.Font=Enum.Font.GothamBold; delB.TextColor3=RED
-        delB.TextSize=13; delB.AutoButtonColor=false
-        do local c=Instance.new("UICorner");c.CornerRadius=UDim.new(0,6);c.Parent=delB end
+        delB.TextSize=13; delB.AutoButtonColor=false; rnd(delB,6)
 
-        -- Tap row = load
         row.InputBegan:Connect(function(i)
             if i.UserInputType==Enum.UserInputType.Touch or i.UserInputType==Enum.UserInputType.MouseButton1 then
-                nameBox.Text = name
-                MS.inputs = data.inputs
-                updateInfo()
-                setStatus("Loaded: "..name, ACC)
+                nameBox.Text=name; MS.inputs=data.inputs; updateInfo()
+                setStatus("Loaded: "..name, ACC); switchTab(1)
             end
         end)
         delB.MouseButton1Click:Connect(function()
-            MS.macros[name] = nil
-            refreshMacroList()
+            MS.macros[name]=nil; refreshMacroList()
         end)
-
-        itemY = itemY + itemH
+        iy=iy+IH
     end
 
-    if count == 0 then
-        local el = Instance.new("TextLabel"); el.Parent=scroll
-        el.BackgroundTransparency=1
-        el.Position=UDim2.new(0,0,0,itemY); el.Size=UDim2.new(1,0,0,RH.emptyLabel)
+    if count==0 then
+        local el=Instance.new("TextLabel"); el.Parent=macroListSF; table.insert(macroItems,el)
+        el.BackgroundTransparency=1; el.Position=UDim2.new(0,0,0,8); el.Size=UDim2.new(1,0,0,36)
         el.Text="No saved macros"; el.TextSize=12; el.Font=Enum.Font.Gotham
         el.TextColor3=MUTED; el.TextXAlignment=Enum.TextXAlignment.Center
-        el.TextYAlignment=Enum.TextYAlignment.Center
-        table.insert(macroItems, el)
-        itemY = itemY + RH.emptyLabel
+        iy=iy+36
     end
 
-    -- Grow canvas if needed
-    local needed = itemY + RH.spacer * 3
-    if needed > CANVAS_H then
-        scroll.CanvasSize = UDim2.new(0, 0, 0, needed)
-    end
+    macroListSF.CanvasSize=UDim2.new(0,0,0,iy+8)
 end
 
+-- ────────────────────────────────────────
 function MS:StartRec()
     if self.playing then return end
     self.recording=true; self.inputs={}; self.recStart=tick()
-    setStatus("Recording…", RED)
-    recBtn:RC(Color3.fromRGB(140,30,30)); recBtn.Text="⏹  Stop Rec"
+    -- FIX 4: turns GREEN and says Recording
+    setStatus("● Recording…", GREEN)
+    recBtn:RC(GREEN); recBtn.Text="⏹  Stop Rec"
     updateInfo()
 end
 
@@ -726,70 +721,70 @@ function MS:StopPlay()
 end
 
 function MS:PlayOnce(inputs, totalDur)
-    local base = tick()
-    for _, ev in ipairs(inputs) do
+    local base=tick()
+    for _,ev in ipairs(inputs) do
         if self.stopReq then return false end
-        local target = base + (ev.time / CFG.speedMult)
-        local now = tick()
-        if target > now then task.wait(target - now) end
+        local target=base+(ev.time/CFG.speedMult)
+        local now=tick()
+        if target>now then task.wait(target-now) end
         if self.stopReq then return false end
         if VIM then
             pcall(function()
                 if ev.t=="TD" or ev.t=="MD" then
-                    VIM:SendMouseButtonEvent(ev.x, ev.y, 0, true,  game, 0)
+                    VIM:SendMouseButtonEvent(ev.x,ev.y,0,true,game,0)
                 elseif ev.t=="TU" or ev.t=="MU" then
-                    VIM:SendMouseButtonEvent(ev.x, ev.y, 0, false, game, 0)
+                    VIM:SendMouseButtonEvent(ev.x,ev.y,0,false,game,0)
                 elseif ev.t=="TM" or ev.t=="MM" then
-                    VIM:SendMouseMoveEvent(ev.x, ev.y, game)
+                    VIM:SendMouseMoveEvent(ev.x,ev.y,game)
                 end
             end)
         end
-        if totalDur > 0 then setProgress(ev.time / totalDur) end
+        if totalDur>0 then setProgress(ev.time/totalDur) end
     end
     return true
 end
 
 function MS:Play()
     if self.recording then self:StopRec() end
-    if self.playing   then self:StopPlay(); return end
-    if #self.inputs == 0 then setStatus("Nothing to play!", RED); return end
+    if self.playing then self:StopPlay(); return end
+    if #self.inputs==0 then setStatus("Nothing to play!", RED); return end
 
     self.playing=true; self.stopReq=false
     playBtn:RC(YELLOW); playBtn.Text="⏸  Stop"
 
-    local inputs   = self.inputs
-    local totalDur = inputs[#inputs] and inputs[#inputs].time or 0
+    local inputs=self.inputs
+    local totalDur=inputs[#inputs] and inputs[#inputs].time or 0
 
     task.spawn(function()
-        if CFG.startDelay > 0 then
-            setStatus(string.format("Starting in %.1fs…", CFG.startDelay), YELLOW)
+        if CFG.startDelay>0 then
+            setStatus(string.format("Starting in %.1fs…",CFG.startDelay),YELLOW)
             task.wait(CFG.startDelay)
             if self.stopReq then self:StopPlay(); return end
         end
 
-        local maxL = CFG.loopCount==0 and math.huge or CFG.loopCount
-        local loop = 0
+        local maxL=CFG.loopCount==0 and math.huge or CFG.loopCount
+        local loop=0
 
-        while loop < maxL and not self.stopReq do
-            loop = loop + 1
-            loopLbl.Text = CFG.loopCount==0
-                and string.format("Loop %d / ∞", loop)
-                or  string.format("Loop %d / %d", loop, CFG.loopCount)
-            setStatus("Playing…", GREEN)
+        while loop<maxL and not self.stopReq do
+            loop=loop+1
+            loopLbl.Text=CFG.loopCount==0
+                and string.format("Loop %d / ∞",loop)
+                or  string.format("Loop %d / %d",loop,CFG.loopCount)
+            setStatus("Playing…",GREEN)
 
-            local ok = self:PlayOnce(inputs, totalDur)
+            local ok=self:PlayOnce(inputs,totalDur)
             if not ok or self.stopReq then break end
             setProgress(1)
 
-            if loop < maxL and CFG.loopDelay > 0 and not self.stopReq then
-                setStatus(string.format("Loop pause %.1fs…", CFG.loopDelay), YELLOW)
+            if loop<maxL and CFG.loopDelay>0 and not self.stopReq then
+                setStatus(string.format("Loop pause %.1fs…",CFG.loopDelay),YELLOW)
                 task.wait(CFG.loopDelay)
             end
         end
 
         if not self.stopReq then
             self:StopPlay()
-            setStatus(string.format("Done (%d loop%s)", loop, loop==1 and "" or "s"), GREEN)
+            setStatus(string.format("Done (%d loop%s)",loop,loop==1 and "" or "s"),GREEN)
         end
     end)
 end
@@ -804,53 +799,69 @@ playBtn.MouseButton1Click:Connect(function() MS:Play() end)
 stopBtn.MouseButton1Click:Connect(function() MS:StopRec(); MS:StopPlay() end)
 clrBtn.MouseButton1Click:Connect(function()
     MS:StopRec(); MS:StopPlay()
-    MS.inputs = {}; updateInfo()
-    setStatus("Cleared", ORANGE); setProgress(0)
+    MS.inputs={}; updateInfo()
+    setStatus("Cleared",ORANGE); setProgress(0)
 end)
-
 saveBtn.MouseButton1Click:Connect(function()
-    local n = nameBox.Text
-    if n == "" then setStatus("Enter a name first!", RED); return end
-    MS.macros[n] = {inputs = MS.inputs}
-    setStatus("Saved: "..n, ACC)
-    refreshMacroList()
+    local n=nameBox.Text
+    if n=="" then setStatus("Enter a name first!",RED); return end
+    MS.macros[n]={inputs=MS.inputs}
+    setStatus("Saved: "..n,ACC); refreshMacroList()
 end)
 loadBtn.MouseButton1Click:Connect(function()
-    local n = nameBox.Text
-    if not MS.macros[n] then setStatus("Not found!", RED); return end
-    MS.inputs = MS.macros[n].inputs; updateInfo()
-    setStatus("Loaded: "..n, PURPLE)
+    local n=nameBox.Text
+    if not MS.macros[n] then setStatus("Not found!",RED); return end
+    MS.inputs=MS.macros[n].inputs; updateInfo()
+    setStatus("Loaded: "..n,PURPLE); switchTab(1)
 end)
 
 -- ════════════════════════════════════════
 --  INPUT RECORDING
+--  FIX 2: Use InputBegan on UIS directly.
+--  On mobile executors, TouchStarted may
+--  fire with processed=true and get swallowed.
+--  UIS.InputBegan fires regardless.
 -- ════════════════════════════════════════
-local function rec(t2, x, y)
+local activeTouches = {}  -- track active touch IDs for move events
+
+local function isInsideWin(x, y)
+    local ap=win.AbsolutePosition; local as=win.AbsoluteSize
+    return x>=ap.X and x<=ap.X+as.X and y>=ap.Y and y<=ap.Y+as.Y
+end
+
+local function recEvent(t2, x, y)
     if not MS.recording then return end
-    local ap = win.AbsolutePosition; local as = win.AbsoluteSize
-    if x >= ap.X and x <= ap.X+as.X and y >= ap.Y and y <= ap.Y+as.Y then return end
-    local t = tick() - MS.recStart
-    table.insert(MS.inputs, {t=t2, x=x, y=y, time=t})
+    if isInsideWin(x, y) then return end
+    local t=tick()-MS.recStart
+    table.insert(MS.inputs,{t=t2,x=x,y=y,time=t})
     updateInfo()
 end
 
-UIS.TouchStarted:Connect(function(touch,_) rec("TD", touch.Position.X, touch.Position.Y) end)
-UIS.TouchMoved:Connect(  function(touch,_) rec("TM", touch.Position.X, touch.Position.Y) end)
-UIS.TouchEnded:Connect(  function(touch,_) rec("TU", touch.Position.X, touch.Position.Y) end)
+-- PRIMARY: InputBegan / InputChanged / InputEnded (works on mobile)
+UIS.InputBegan:Connect(function(inp, processed)
+    -- Record touch regardless of processed flag
+    if inp.UserInputType == Enum.UserInputType.Touch then
+        activeTouches[inp] = true
+        recEvent("TD", inp.Position.X, inp.Position.Y)
+    elseif inp.UserInputType == Enum.UserInputType.MouseButton1 and CFG.recMouse and not processed then
+        recEvent("MD", inp.Position.X, inp.Position.Y)
+    end
+end)
 
-UIS.InputBegan:Connect(function(i,_)
-    if i.UserInputType==Enum.UserInputType.MouseButton1 and CFG.recMouse then
-        rec("MD", i.Position.X, i.Position.Y)
+UIS.InputChanged:Connect(function(inp, processed)
+    if inp.UserInputType == Enum.UserInputType.Touch and activeTouches[inp] then
+        recEvent("TM", inp.Position.X, inp.Position.Y)
+    elseif inp.UserInputType == Enum.UserInputType.MouseMovement and CFG.recMouse and not processed then
+        recEvent("MM", inp.Position.X, inp.Position.Y)
     end
 end)
-UIS.InputChanged:Connect(function(i)
-    if i.UserInputType==Enum.UserInputType.MouseMovement and CFG.recMouse and MS.recording then
-        rec("MM", i.Position.X, i.Position.Y)
-    end
-end)
-UIS.InputEnded:Connect(function(i)
-    if i.UserInputType==Enum.UserInputType.MouseButton1 and CFG.recMouse then
-        rec("MU", i.Position.X, i.Position.Y)
+
+UIS.InputEnded:Connect(function(inp, processed)
+    if inp.UserInputType == Enum.UserInputType.Touch then
+        activeTouches[inp] = nil
+        recEvent("TU", inp.Position.X, inp.Position.Y)
+    elseif inp.UserInputType == Enum.UserInputType.MouseButton1 and CFG.recMouse and not processed then
+        recEvent("MU", inp.Position.X, inp.Position.Y)
     end
 end)
 
