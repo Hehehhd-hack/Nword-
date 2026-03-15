@@ -1,437 +1,502 @@
 --[[
-    Delta Macro Executor v2 — Mobile Edition
-    Features:
-      • Touch recording & replay (TouchStart, TouchMoved, TouchEnded)
-      • Loop count (1–999 or infinite)
-      • Playback speed multiplier (0.25×–4×)
-      • Pre-start delay
-      • Loop delay (pause between loops)
-      • Save / Load / Delete named macros
-      • Swipe-down to minimise → floating FAB to restore
-      • Tabbed UI: Main | Settings | Macros
-      • Live progress bar during playback
-      • Works on both mobile (touch) and PC (mouse) simultaneously
+    Delta Macro Executor v3 — Mobile + PC
+    • Compact draggable window (320×420px)
+    • Fully functional touch & mouse recording + replay
+    • Loop count, playback speed, start delay, loop delay
+    • Save / Load / Delete named macros
+    • Minimize to FAB, restore on tap
+    • Works on mobile (touch) and PC (mouse) simultaneously
 --]]
 
-local Players       = game:GetService("Players")
-local UIS           = game:GetService("UserInputService")
-local TweenService  = game:GetService("TweenService")
-local RunService    = game:GetService("RunService")
-local VirtualInputManager -- only available in executor environments
-pcall(function() VirtualInputManager = game:GetService("VirtualInputManager") end)
+-- ═══════════════════════════════════════════
+--  SERVICES
+-- ═══════════════════════════════════════════
+local Players      = game:GetService("Players")
+local UIS          = game:GetService("UserInputService")
+local TS           = game:GetService("TweenService")
+local RunService   = game:GetService("RunService")
+local CoreGui      = game:GetService("CoreGui")
 
-local player = Players.LocalPlayer
+-- VirtualInputManager: available in most executors, used for input replay
+local VIM
+pcall(function() VIM = game:GetService("VirtualInputManager") end)
 
--- ══════════════════════════════════════════════
---  SETTINGS (defaults, overridden by UI)
--- ══════════════════════════════════════════════
-local Settings = {
-    loopCount      = 1,       -- 0 = infinite
-    loopDelay      = 0,       -- seconds between loops
-    startDelay     = 0,       -- seconds before first play
-    speedMult      = 1.0,     -- playback speed multiplier
-    recordMouse    = true,    -- also record MouseButton1 clicks (PC)
+local player   = Players.LocalPlayer
+local camera   = workspace.CurrentCamera
+
+-- ═══════════════════════════════════════════
+--  DESTROY OLD INSTANCE (re-run safe)
+-- ═══════════════════════════════════════════
+if CoreGui:FindFirstChild("DeltaMacroV3") then
+    CoreGui:FindFirstChild("DeltaMacroV3"):Destroy()
+end
+
+-- ═══════════════════════════════════════════
+--  SETTINGS
+-- ═══════════════════════════════════════════
+local CFG = {
+    loopCount   = 1,     -- 0 = infinite
+    loopDelay   = 0,     -- seconds between loops
+    startDelay  = 0,     -- seconds before first play
+    speedMult   = 1.0,   -- playback speed (1 = real-time)
+    recordMouse = true,  -- record PC mouse events too
 }
 
--- ══════════════════════════════════════════════
---  MACRO SYSTEM
--- ══════════════════════════════════════════════
-local MacroSystem = {
-    isRecording        = false,
-    isPlaying          = false,
-    stopRequested      = false,
-    recordedInputs     = {},
-    macros             = {},
-    recordingStartTime = 0,
-    currentLoopsDone   = 0,
+-- ═══════════════════════════════════════════
+--  MACRO STATE
+-- ═══════════════════════════════════════════
+local MS = {
+    recording        = false,
+    playing          = false,
+    stopReq          = false,
+    inputs           = {},   -- recorded events
+    macros           = {},   -- named saves
+    recStartTime     = 0,
 }
 
--- ══════════════════════════════════════════════
---  SCREEN GUI
--- ══════════════════════════════════════════════
-local screenGui = Instance.new("ScreenGui")
-screenGui.Name            = "DeltaMacroV2"
-screenGui.Parent          = game:GetService("CoreGui")
-screenGui.ZIndexBehavior  = Enum.ZIndexBehavior.Sibling
-screenGui.IgnoreGuiInset  = true
-screenGui.ResetOnSpawn    = false
-
--- ══════════════════════════════════════════════
---  COLOURS & HELPERS
--- ══════════════════════════════════════════════
+-- ═══════════════════════════════════════════
+--  COLOURS
+-- ═══════════════════════════════════════════
 local C = {
-    bg        = Color3.fromRGB(18,  18,  24),
-    panel     = Color3.fromRGB(28,  28,  36),
-    card      = Color3.fromRGB(38,  38,  50),
-    accent    = Color3.fromRGB(99,  102, 241),
-    accentHi  = Color3.fromRGB(129, 140, 248),
-    red       = Color3.fromRGB(239, 68,  68),
-    green     = Color3.fromRGB(34,  197, 94),
-    yellow    = Color3.fromRGB(234, 179, 8),
-    orange    = Color3.fromRGB(249, 115, 22),
-    muted     = Color3.fromRGB(100, 100, 120),
-    text      = Color3.fromRGB(230, 230, 240),
-    subtext   = Color3.fromRGB(140, 140, 160),
-    handle    = Color3.fromRGB(70,  70,  90),
+    bg       = Color3.fromRGB(15,  15,  20),
+    panel    = Color3.fromRGB(24,  24,  32),
+    card     = Color3.fromRGB(34,  34,  46),
+    border   = Color3.fromRGB(50,  50,  68),
+    accent   = Color3.fromRGB(99,  102, 241),
+    aHi      = Color3.fromRGB(139, 142, 255),
+    red      = Color3.fromRGB(239, 68,  68),
+    green    = Color3.fromRGB(34,  197, 94),
+    yellow   = Color3.fromRGB(234, 179, 8),
+    orange   = Color3.fromRGB(249, 115, 22),
+    muted    = Color3.fromRGB(90,  90, 110),
+    text     = Color3.fromRGB(225, 225, 235),
+    sub      = Color3.fromRGB(130, 130, 155),
 }
 
-local function tween(obj, props, t, style, dir)
-    style = style or Enum.EasingStyle.Quart
-    dir   = dir   or Enum.EasingDirection.Out
-    TweenService:Create(obj, TweenInfo.new(t or 0.2, style, dir), props):Play()
+-- ═══════════════════════════════════════════
+--  TWEEN HELPER
+-- ═══════════════════════════════════════════
+local function tw(obj, props, t, style, dir)
+    TS:Create(obj, TweenInfo.new(
+        t     or 0.18,
+        style or Enum.EasingStyle.Quart,
+        dir   or Enum.EasingDirection.Out
+    ), props):Play()
 end
 
-local function corner(parent, radius)
+-- ═══════════════════════════════════════════
+--  UI HELPERS
+-- ═══════════════════════════════════════════
+local function mkCorner(p, r)
     local c = Instance.new("UICorner")
-    c.CornerRadius = UDim.new(0, radius or 12)
-    c.Parent = parent
-    return c
+    c.CornerRadius = UDim.new(0, r or 10)
+    c.Parent = p
 end
 
-local function pad(parent, top, bottom, left, right)
-    local p = Instance.new("UIPadding")
-    p.PaddingTop    = UDim.new(0, top    or 0)
-    p.PaddingBottom = UDim.new(0, bottom or 0)
-    p.PaddingLeft   = UDim.new(0, left   or 0)
-    p.PaddingRight  = UDim.new(0, right  or 0)
-    p.Parent = parent
+local function mkPad(p, t, b, l, r)
+    local u = Instance.new("UIPadding")
+    u.PaddingTop    = UDim.new(0, t or 0)
+    u.PaddingBottom = UDim.new(0, b or 0)
+    u.PaddingLeft   = UDim.new(0, l or 0)
+    u.PaddingRight  = UDim.new(0, r or 0)
+    u.Parent = p
 end
 
-local function label(parent, text, size, color, font, xalign)
+local function mkLabel(p, txt, sz, col, font, xa)
     local l = Instance.new("TextLabel")
-    l.Parent              = parent
+    l.Parent             = p
     l.BackgroundTransparency = 1
-    l.Text                = text
-    l.TextSize            = size or 14
-    l.TextColor3          = color or C.text
-    l.Font                = font  or Enum.Font.Gotham
-    l.TextXAlignment      = xalign or Enum.TextXAlignment.Left
-    l.Size                = UDim2.new(1, 0, 0, size and size + 6 or 20)
+    l.Text               = txt
+    l.TextSize           = sz  or 13
+    l.TextColor3         = col or C.text
+    l.Font               = font or Enum.Font.Gotham
+    l.TextXAlignment     = xa  or Enum.TextXAlignment.Left
+    l.Size               = UDim2.new(1, 0, 0, (sz or 13) + 4)
+    l.TextTruncate       = Enum.TextTruncate.AtEnd
     return l
 end
 
--- Button factory with press animation
-local function makeButton(parent, text, bg, fg, order)
-    local btn = Instance.new("TextButton")
-    btn.Parent           = parent
-    btn.BackgroundColor3 = bg
-    btn.BorderSizePixel  = 0
-    btn.Font             = Enum.Font.GothamBold
-    btn.Text             = text
-    btn.TextColor3       = fg or C.text
-    btn.TextSize         = 14
-    btn.AutoButtonColor  = false
-    btn.LayoutOrder      = order or 0
-    corner(btn, 10)
+-- Button with press feel
+local function mkBtn(p, txt, bg, fg, order)
+    local b = Instance.new("TextButton")
+    b.Parent           = p
+    b.BackgroundColor3 = bg
+    b.BorderSizePixel  = 0
+    b.Font             = Enum.Font.GothamBold
+    b.Text             = txt
+    b.TextColor3       = fg or C.text
+    b.TextSize         = 13
+    b.AutoButtonColor  = false
+    b.LayoutOrder      = order or 0
+    b.ClipsDescendants = true
+    mkCorner(b, 8)
 
     local orig = bg
-    btn.MouseButton1Down:Connect(function()
-        tween(btn, {BackgroundColor3 = orig:Lerp(Color3.new(1,1,1), 0.18)}, 0.07)
-        tween(btn, {Size = UDim2.new(btn.Size.X.Scale, btn.Size.X.Offset - 2, btn.Size.Y.Scale, btn.Size.Y.Offset - 2)}, 0.07)
+    b.MouseButton1Down:Connect(function()
+        tw(b, {BackgroundColor3 = orig:Lerp(Color3.new(1,1,1), 0.2)}, 0.06)
     end)
-    btn.MouseButton1Up:Connect(function()
-        tween(btn, {BackgroundColor3 = orig}, 0.12)
-        tween(btn, {Size = UDim2.new(btn.Size.X.Scale, btn.Size.X.Offset + 2, btn.Size.Y.Scale, btn.Size.Y.Offset + 2)}, 0.12)
+    b.MouseButton1Up:Connect(function()
+        tw(b, {BackgroundColor3 = orig}, 0.12)
     end)
 
-    function btn:SetColor(newBg)
+    -- allow re-colouring
+    function b:Recolor(newBg)
         orig = newBg
-        btn.BackgroundColor3 = newBg
+        b.BackgroundColor3 = newBg
     end
 
-    return btn
+    return b
 end
 
--- ══════════════════════════════════════════════
---  MAIN BOTTOM SHEET
--- ══════════════════════════════════════════════
-local SHEET_Y_OPEN   = UDim2.new(0, 0, 0.48, 0)
-local SHEET_Y_CLOSED = UDim2.new(0, 0, 1.05, 0)
+-- ═══════════════════════════════════════════
+--  SCREEN GUI
+-- ═══════════════════════════════════════════
+local gui = Instance.new("ScreenGui")
+gui.Name           = "DeltaMacroV3"
+gui.Parent         = CoreGui
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+gui.IgnoreGuiInset = true
+gui.ResetOnSpawn   = false
 
-local mainFrame = Instance.new("Frame")
-mainFrame.Name            = "Sheet"
-mainFrame.Parent          = screenGui
-mainFrame.BackgroundColor3 = C.bg
-mainFrame.BorderSizePixel = 0
-mainFrame.Position        = SHEET_Y_OPEN
-mainFrame.Size            = UDim2.new(1, 0, 0.52, 0)
-corner(mainFrame, 22)
+-- ═══════════════════════════════════════════
+--  MAIN WINDOW  (compact fixed-size, draggable)
+-- ═══════════════════════════════════════════
+local WIN_W, WIN_H = 320, 430
 
--- Drag pill
-local pill = Instance.new("Frame")
-pill.Parent           = mainFrame
-pill.BackgroundColor3 = C.handle
-pill.BorderSizePixel  = 0
-pill.Position         = UDim2.new(0.5, -22, 0, 10)
-pill.Size             = UDim2.new(0, 44, 0, 5)
-corner(pill, 99)
+local win = Instance.new("Frame")
+win.Name            = "Window"
+win.Parent          = gui
+win.BackgroundColor3 = C.bg
+win.BorderSizePixel = 0
+win.Size            = UDim2.new(0, WIN_W, 0, WIN_H)
+win.Position        = UDim2.new(0, 20, 0, 60)
+win.ClipsDescendants = true
+mkCorner(win, 14)
 
--- ══ TAB BAR ══
+-- subtle border
+local border = Instance.new("UIStroke")
+border.Parent    = win
+border.Color     = C.border
+border.Thickness = 1
+border.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+
+-- ── TITLE BAR (drag handle) ──────────────
+local titleBar = Instance.new("Frame")
+titleBar.Name            = "TitleBar"
+titleBar.Parent          = win
+titleBar.BackgroundColor3 = C.panel
+titleBar.BorderSizePixel = 0
+titleBar.Size            = UDim2.new(1, 0, 0, 36)
+titleBar.Position        = UDim2.new(0, 0, 0, 0)
+
+local titleLbl = mkLabel(titleBar, "⬡  Delta Macro", 14, C.text, Enum.Font.GothamBold)
+titleLbl.Size     = UDim2.new(1, -80, 1, 0)
+titleLbl.Position = UDim2.new(0, 10, 0, 0)
+titleLbl.TextYAlignment = Enum.TextYAlignment.Center
+
+-- Minimize button
+local minBtn = mkBtn(titleBar, "─", C.card, C.sub)
+minBtn.Size     = UDim2.new(0, 28, 0, 22)
+minBtn.Position = UDim2.new(1, -62, 0.5, -11)
+
+-- Close button
+local closeBtn = mkBtn(titleBar, "✕", C.red, C.text)
+closeBtn.Size     = UDim2.new(0, 28, 0, 22)
+closeBtn.Position = UDim2.new(1, -30, 0.5, -11)
+
+-- ── DRAG LOGIC ───────────────────────────
+do
+    local dragging, dragInput, dragStart, startPos = false, nil, nil, nil
+
+    local function update(inp)
+        local delta = inp.Position - dragStart
+        local newX  = startPos.X.Offset + delta.X
+        local newY  = startPos.Y.Offset + delta.Y
+        -- clamp inside screen
+        local vp = camera.ViewportSize
+        newX = math.clamp(newX, 0, vp.X - WIN_W)
+        newY = math.clamp(newY, 0, vp.Y - WIN_H)
+        win.Position = UDim2.new(0, newX, 0, newY)
+    end
+
+    titleBar.InputBegan:Connect(function(inp)
+        if inp.UserInputType == Enum.UserInputType.Touch
+        or inp.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging  = true
+            dragInput = inp
+            dragStart = inp.Position
+            startPos  = win.Position
+        end
+    end)
+
+    UIS.InputChanged:Connect(function(inp)
+        if dragging and (
+            inp.UserInputType == Enum.UserInputType.Touch or
+            inp.UserInputType == Enum.UserInputType.MouseMovement
+        ) then
+            update(inp)
+        end
+    end)
+
+    UIS.InputEnded:Connect(function(inp)
+        if inp == dragInput then dragging = false end
+    end)
+end
+
+-- ── TAB BAR ──────────────────────────────
 local tabBar = Instance.new("Frame")
-tabBar.Parent           = mainFrame
+tabBar.Parent           = win
 tabBar.BackgroundColor3 = C.panel
 tabBar.BorderSizePixel  = 0
-tabBar.Position         = UDim2.new(0, 12, 0, 24)
-tabBar.Size             = UDim2.new(1, -24, 0, 38)
-corner(tabBar, 10)
+tabBar.Position         = UDim2.new(0, 0, 0, 36)
+tabBar.Size             = UDim2.new(1, 0, 0, 32)
 
-local tabLayout = Instance.new("UIListLayout")
-tabLayout.Parent          = tabBar
-tabLayout.FillDirection   = Enum.FillDirection.Horizontal
-tabLayout.SortOrder       = Enum.SortOrder.LayoutOrder
-tabLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-tabLayout.VerticalAlignment   = Enum.VerticalAlignment.Center
-tabLayout.Padding         = UDim.new(0, 4)
-pad(tabBar, 4, 4, 6, 6)
+local tabRowLayout = Instance.new("UIListLayout")
+tabRowLayout.Parent             = tabBar
+tabRowLayout.FillDirection      = Enum.FillDirection.Horizontal
+tabRowLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+tabRowLayout.VerticalAlignment  = Enum.VerticalAlignment.Center
+tabRowLayout.Padding            = UDim.new(0, 2)
+mkPad(tabBar, 4, 4, 6, 6)
 
-local TAB_NAMES = {"Main", "Settings", "Macros"}
-local tabButtons = {}
-local tabPages   = {}
+local TABS      = {"Main", "Settings", "Macros"}
+local tabBtns   = {}
+local tabFrames = {}
 
-local function makeTab(name, order)
-    local btn = Instance.new("TextButton")
-    btn.Parent           = tabBar
-    btn.BackgroundColor3 = C.card
-    btn.BorderSizePixel  = 0
-    btn.Font             = Enum.Font.GothamBold
-    btn.Text             = name
-    btn.TextColor3       = C.subtext
-    btn.TextSize         = 13
-    btn.AutoButtonColor  = false
-    btn.Size             = UDim2.new(0.32, -3, 1, 0)
-    btn.LayoutOrder      = order
-    corner(btn, 7)
-    return btn
-end
+for i, name in ipairs(TABS) do
+    local tb = Instance.new("TextButton")
+    tb.Parent           = tabBar
+    tb.BackgroundColor3 = C.card
+    tb.BorderSizePixel  = 0
+    tb.Font             = Enum.Font.GothamBold
+    tb.Text             = name
+    tb.TextColor3       = C.sub
+    tb.TextSize         = 12
+    tb.AutoButtonColor  = false
+    tb.Size             = UDim2.new(0.33, -3, 1, 0)
+    tb.LayoutOrder      = i
+    mkCorner(tb, 6)
+    tabBtns[i] = tb
 
-for i, name in ipairs(TAB_NAMES) do
-    tabButtons[i] = makeTab(name, i)
-
-    local page = Instance.new("ScrollingFrame")
-    page.Name                 = name .. "Page"
-    page.Parent               = mainFrame
+    local page = Instance.new("Frame")
+    page.Name            = name .. "Page"
+    page.Parent          = win
     page.BackgroundTransparency = 1
-    page.BorderSizePixel      = 0
-    page.Position             = UDim2.new(0, 12, 0, 70)
-    page.Size                 = UDim2.new(1, -24, 1, -78)
-    page.ScrollBarThickness   = 3
-    page.ScrollBarImageColor3 = C.muted
-    page.CanvasSize           = UDim2.new(0, 0, 0, 0)
-    page.AutomaticCanvasSize  = Enum.AutomaticSize.Y
-    page.Visible              = (i == 1)
-
-    local pl = Instance.new("UIListLayout")
-    pl.Parent  = page
-    pl.Padding = UDim.new(0, 8)
-    pl.SortOrder = Enum.SortOrder.LayoutOrder
-
-    tabPages[i] = page
+    page.BorderSizePixel = 0
+    page.Position        = UDim2.new(0, 8, 0, 72)
+    page.Size            = UDim2.new(1, -16, 1, -76)
+    page.Visible         = (i == 1)
+    tabFrames[i] = page
 end
 
-local currentTab = 1
-
+local activeTab = 1
 local function switchTab(idx)
-    currentTab = idx
-    for i, btn in ipairs(tabButtons) do
-        local active = (i == idx)
-        tween(btn, {
-            BackgroundColor3 = active and C.accent or C.card,
-            TextColor3       = active and C.text   or C.subtext,
-        }, 0.15)
-        tabPages[i].Visible = active
+    activeTab = idx
+    for i, tb in ipairs(tabBtns) do
+        local on = (i == idx)
+        tw(tb, {BackgroundColor3 = on and C.accent or C.card,
+                TextColor3       = on and C.text   or C.sub}, 0.15)
+        tabFrames[i].Visible = on
     end
 end
-
-for i, btn in ipairs(tabButtons) do
-    btn.MouseButton1Click:Connect(function() switchTab(i) end)
+for i, tb in ipairs(tabBtns) do
+    tb.MouseButton1Click:Connect(function() switchTab(i) end)
 end
 switchTab(1)
 
--- ══════════════════════════════════════════════
---  SECTION HELPER
--- ══════════════════════════════════════════════
-local function section(page, title, order)
+-- ═══════════════════════════════════════════
+--  SCROLLABLE CONTENT HELPER
+-- ═══════════════════════════════════════════
+local function mkScroll(parent)
+    local sf = Instance.new("ScrollingFrame")
+    sf.Parent               = parent
+    sf.Size                 = UDim2.new(1, 0, 1, 0)
+    sf.BackgroundTransparency = 1
+    sf.BorderSizePixel      = 0
+    sf.ScrollBarThickness   = 3
+    sf.ScrollBarImageColor3 = C.muted
+    sf.CanvasSize           = UDim2.new(0, 0, 0, 0)
+    sf.AutomaticCanvasSize  = Enum.AutomaticSize.Y
+    local ul = Instance.new("UIListLayout")
+    ul.Parent   = sf
+    ul.Padding  = UDim.new(0, 6)
+    ul.SortOrder = Enum.SortOrder.LayoutOrder
+    return sf
+end
+
+-- ─── SECTION CARD ────────────────────────
+local function mkSection(parent, title, order)
     local f = Instance.new("Frame")
-    f.Parent           = page
+    f.Parent           = parent
     f.BackgroundColor3 = C.panel
     f.BorderSizePixel  = 0
     f.AutomaticSize    = Enum.AutomaticSize.Y
     f.Size             = UDim2.new(1, 0, 0, 0)
-    f.LayoutOrder      = order
-    corner(f, 12)
-
-    local fl = Instance.new("UIListLayout")
-    fl.Parent  = f
-    fl.Padding = UDim.new(0, 6)
-    fl.SortOrder = Enum.SortOrder.LayoutOrder
-    pad(f, 10, 10, 12, 12)
-
+    f.LayoutOrder      = order or 0
+    mkCorner(f, 10)
+    mkPad(f, 8, 8, 10, 10)
+    local ul = Instance.new("UIListLayout")
+    ul.Parent   = f
+    ul.Padding  = UDim.new(0, 5)
+    ul.SortOrder = Enum.SortOrder.LayoutOrder
     if title then
-        local t = label(f, title, 11, C.muted, Enum.Font.GothamBold)
+        local t = mkLabel(f, title, 10, C.muted, Enum.Font.GothamBold)
         t.LayoutOrder = 0
-        t.Size = UDim2.new(1, 0, 0, 18)
+        t.Size = UDim2.new(1, 0, 0, 14)
     end
-
     return f
 end
 
--- ══════════════════════════════════════════════
---  STATUS BAR (top of Main page)
--- ══════════════════════════════════════════════
-local mainPage = tabPages[1]
+-- ═══════════════════════════════════════════
+--  MAIN TAB
+-- ═══════════════════════════════════════════
+local mainScroll = mkScroll(tabFrames[1])
 
-local statusFrame = Instance.new("Frame")
-statusFrame.Parent           = mainPage
-statusFrame.BackgroundColor3 = C.panel
-statusFrame.BorderSizePixel  = 0
-statusFrame.Size             = UDim2.new(1, 0, 0, 36)
-statusFrame.LayoutOrder      = 0
-corner(statusFrame, 10)
-pad(statusFrame, 0, 0, 12, 12)
+-- Status row
+local statusSec = mkSection(mainScroll, nil, 0)
+do
+    local row = Instance.new("Frame")
+    row.Parent               = statusSec
+    row.BackgroundTransparency = 1
+    row.Size                 = UDim2.new(1, 0, 0, 22)
+    row.LayoutOrder          = 1
+    local rl = Instance.new("UIListLayout")
+    rl.Parent            = row
+    rl.FillDirection     = Enum.FillDirection.Horizontal
+    rl.VerticalAlignment = Enum.VerticalAlignment.Center
+    rl.Padding           = UDim.new(0, 6)
 
-local statusInner = Instance.new("UIListLayout")
-statusInner.Parent           = statusFrame
-statusInner.FillDirection    = Enum.FillDirection.Horizontal
-statusInner.VerticalAlignment = Enum.VerticalAlignment.Center
-statusInner.Padding          = UDim.new(0, 8)
+    local dot = Instance.new("Frame")
+    dot.Parent           = row
+    dot.BackgroundColor3 = C.green
+    dot.BorderSizePixel  = 0
+    dot.Size             = UDim2.new(0, 7, 0, 7)
+    mkCorner(dot, 99)
+    -- store refs
+    _G._DMdot = dot
 
-local statusDot = Instance.new("Frame")
-statusDot.Parent           = statusFrame
-statusDot.BackgroundColor3 = C.green
-statusDot.BorderSizePixel  = 0
-statusDot.Size             = UDim2.new(0, 8, 0, 8)
-corner(statusDot, 99)
-
-local statusText = Instance.new("TextLabel")
-statusText.Parent               = statusFrame
-statusText.BackgroundTransparency = 1
-statusText.Text                 = "Ready"
-statusText.TextColor3           = C.text
-statusText.Font                 = Enum.Font.GothamBold
-statusText.TextSize             = 13
-statusText.TextXAlignment       = Enum.TextXAlignment.Left
-statusText.Size                 = UDim2.new(1, -20, 1, 0)
-
-local function updateStatus(text, color)
-    statusText.Text = text
-    local col = color or C.green
-    tween(statusDot, {BackgroundColor3 = col}, 0.2)
-    tween(statusText, {TextColor3 = col}, 0.2)
+    local stxt = mkLabel(row, "Ready", 13, C.text, Enum.Font.GothamBold)
+    stxt.Size = UDim2.new(1, -13, 1, 0)
+    _G._DMstxt = stxt
 end
 
--- ══════════════════════════════════════════════
---  PROGRESS BAR
--- ══════════════════════════════════════════════
-local progressOuter = Instance.new("Frame")
-progressOuter.Parent           = mainPage
-progressOuter.BackgroundColor3 = C.card
-progressOuter.BorderSizePixel  = 0
-progressOuter.Size             = UDim2.new(1, 0, 0, 10)
-progressOuter.LayoutOrder      = 1
-corner(progressOuter, 99)
+-- Progress bar
+local progSec = mkSection(mainScroll, nil, 1)
+do
+    local outer = Instance.new("Frame")
+    outer.Parent           = progSec
+    outer.BackgroundColor3 = C.card
+    outer.BorderSizePixel  = 0
+    outer.Size             = UDim2.new(1, 0, 0, 7)
+    outer.LayoutOrder      = 1
+    mkCorner(outer, 99)
 
-local progressBar = Instance.new("Frame")
-progressBar.Parent           = progressOuter
-progressBar.BackgroundColor3 = C.accent
-progressBar.BorderSizePixel  = 0
-progressBar.Position         = UDim2.new(0, 0, 0, 0)
-progressBar.Size             = UDim2.new(0, 0, 1, 0)
-corner(progressBar, 99)
+    local fill = Instance.new("Frame")
+    fill.Parent           = outer
+    fill.BackgroundColor3 = C.accent
+    fill.BorderSizePixel  = 0
+    fill.Size             = UDim2.new(0, 0, 1, 0)
+    mkCorner(fill, 99)
+    _G._DMfill = fill
 
-local function setProgress(pct)
-    tween(progressBar, {Size = UDim2.new(math.clamp(pct, 0, 1), 0, 1, 0)}, 0.1)
+    local loopLbl = mkLabel(progSec, "", 11, C.sub, Enum.Font.Gotham, Enum.TextXAlignment.Center)
+    loopLbl.LayoutOrder = 2
+    loopLbl.Size = UDim2.new(1, 0, 0, 14)
+    _G._DMloopLbl = loopLbl
 end
 
--- ══════════════════════════════════════════════
---  LOOP INFO LABEL
--- ══════════════════════════════════════════════
-local loopInfoLabel = Instance.new("TextLabel")
-loopInfoLabel.Parent               = mainPage
-loopInfoLabel.BackgroundTransparency = 1
-loopInfoLabel.Text                 = ""
-loopInfoLabel.TextColor3           = C.subtext
-loopInfoLabel.Font                 = Enum.Font.Gotham
-loopInfoLabel.TextSize             = 12
-loopInfoLabel.TextXAlignment       = Enum.TextXAlignment.Center
-loopInfoLabel.Size                 = UDim2.new(1, 0, 0, 16)
-loopInfoLabel.LayoutOrder          = 2
+-- Control buttons
+local ctrlSec = mkSection(mainScroll, "CONTROLS", 2)
+do
+    local grid = Instance.new("Frame")
+    grid.Parent               = ctrlSec
+    grid.BackgroundTransparency = 1
+    grid.Size                 = UDim2.new(1, 0, 0, 106)
+    grid.LayoutOrder          = 1
 
--- ══════════════════════════════════════════════
---  MAIN CONTROL BUTTONS
--- ══════════════════════════════════════════════
-local btnSection = section(mainPage, nil, 3)
+    local gl = Instance.new("UIGridLayout")
+    gl.Parent      = grid
+    gl.CellSize    = UDim2.new(0.5, -4, 0, 46)
+    gl.CellPadding = UDim2.new(0, 8, 0, 8)
 
-local btnGrid = Instance.new("Frame")
-btnGrid.Parent               = btnSection
-btnGrid.BackgroundTransparency = 1
-btnGrid.Size                 = UDim2.new(1, 0, 0, 114)
-btnGrid.LayoutOrder          = 1
+    local recBtn   = mkBtn(grid, "⏺  Record",  C.red,    nil, 1)
+    local playBtn  = mkBtn(grid, "▶  Play",    C.green,  nil, 2)
+    local stopBtn  = mkBtn(grid, "■  Stop",    C.yellow, Color3.fromRGB(20,20,20), 3)
+    local clearBtn = mkBtn(grid, "✕  Clear",   C.orange, nil, 4)
 
-local btnGridLayout = Instance.new("UIGridLayout")
-btnGridLayout.Parent      = btnGrid
-btnGridLayout.CellSize    = UDim2.new(0.5, -5, 0, 50)
-btnGridLayout.CellPadding = UDim2.new(0, 10, 0, 10)
-btnGridLayout.SortOrder   = Enum.SortOrder.LayoutOrder
+    _G._DMrecBtn  = recBtn
+    _G._DMplayBtn = playBtn
 
-local recordBtn = makeButton(btnGrid, "⏺  Record",   C.red,    nil, 1)
-local playBtn   = makeButton(btnGrid, "▶  Play",     C.green,  nil, 2)
-local stopBtn   = makeButton(btnGrid, "■  Stop",     C.yellow, Color3.fromRGB(20,20,20), 3)
-local clearBtn  = makeButton(btnGrid, "✕  Clear",    C.orange, nil, 4)
+    recBtn.MouseButton1Click:Connect(function()
+        if MS.recording then MS:StopRec() else MS:StartRec() end
+    end)
+    playBtn.MouseButton1Click:Connect(function()
+        if MS.playing then MS:StopPlay() else MS:Play() end
+    end)
+    stopBtn.MouseButton1Click:Connect(function()
+        MS:StopRec(); MS:StopPlay()
+    end)
+    clearBtn.MouseButton1Click:Connect(function()
+        MS:StopRec(); MS:StopPlay()
+        MS.inputs = {}
+        MS:UpdateInfo()
+        MS:SetStatus("Cleared", C.orange)
+        MS:SetProgress(0)
+    end)
+end
 
--- ══════════════════════════════════════════════
---  MAIN PAGE — QUICK INFO CARDS
--- ══════════════════════════════════════════════
-local infoSection = section(mainPage, "CURRENT MACRO", 4)
-
-local function infoRow(parent, key, defaultVal, order)
+-- Info cards
+local infoSec = mkSection(mainScroll, "INFO", 3)
+local infoValues = {}
+local function infoRow(parent, key, val, order)
     local row = Instance.new("Frame")
     row.Parent               = parent
     row.BackgroundTransparency = 1
-    row.Size                 = UDim2.new(1, 0, 0, 22)
+    row.Size                 = UDim2.new(1, 0, 0, 18)
     row.LayoutOrder          = order
     local rl = Instance.new("UIListLayout")
-    rl.Parent           = row
-    rl.FillDirection    = Enum.FillDirection.Horizontal
+    rl.Parent            = row
+    rl.FillDirection     = Enum.FillDirection.Horizontal
     rl.VerticalAlignment = Enum.VerticalAlignment.Center
-    local k = label(row, key, 13, C.subtext, Enum.Font.Gotham)
-    k.Size = UDim2.new(0.55, 0, 1, 0)
-    local v = label(row, defaultVal, 13, C.text, Enum.Font.GothamBold, Enum.TextXAlignment.Right)
-    v.Size = UDim2.new(0.45, 0, 1, 0)
+    local k = mkLabel(row, key, 12, C.sub)
+    k.Size = UDim2.new(0.6, 0, 1, 0)
+    local v = mkLabel(row, val, 12, C.text, Enum.Font.GothamBold, Enum.TextXAlignment.Right)
+    v.Size = UDim2.new(0.4, 0, 1, 0)
+    infoValues[key] = v
     return v
 end
+infoRow(infoSec, "Inputs",   "0",     1)
+infoRow(infoSec, "Duration", "0.00s", 2)
+infoRow(infoSec, "Loops",    "1",     3)
+infoRow(infoSec, "Speed",    "1.00×", 4)
 
-local inputCountVal  = infoRow(infoSection, "Inputs recorded", "0", 1)
-local durationVal    = infoRow(infoSection, "Duration", "0.00s", 2)
-local loopSettingVal = infoRow(infoSection, "Loop count", "1", 3)
-local speedVal       = infoRow(infoSection, "Speed", "1.0×", 4)
+-- ═══════════════════════════════════════════
+--  SETTINGS TAB
+-- ═══════════════════════════════════════════
+local setScroll = mkScroll(tabFrames[2])
 
--- ══════════════════════════════════════════════
---  SETTINGS PAGE
--- ══════════════════════════════════════════════
-local settingsPage = tabPages[2]
+-- Slider factory
+local function mkSlider(parent, title, minV, maxV, defV, step, fmt, onChange, order)
+    local sec = mkSection(parent, title, order)
 
--- Helper: slider row
-local function sliderRow(page, title, minVal, maxVal, defaultVal, step, fmt, onChange, order)
-    local sec = section(page, title, order)
-
-    local valLabel = label(sec, fmt(defaultVal), 20, C.accentHi, Enum.Font.GothamBold, Enum.TextXAlignment.Right)
-    valLabel.Size = UDim2.new(1, 0, 0, 26)
-    valLabel.LayoutOrder = 1
+    local valLbl = mkLabel(sec, fmt(defV), 16, C.aHi, Enum.Font.GothamBold, Enum.TextXAlignment.Right)
+    valLbl.Size        = UDim2.new(1, 0, 0, 20)
+    valLbl.LayoutOrder = 1
 
     local track = Instance.new("Frame")
     track.Parent           = sec
     track.BackgroundColor3 = C.card
     track.BorderSizePixel  = 0
-    track.Size             = UDim2.new(1, 0, 0, 8)
+    track.Size             = UDim2.new(1, 0, 0, 6)
     track.LayoutOrder      = 2
-    corner(track, 99)
+    mkCorner(track, 99)
 
     local fill = Instance.new("Frame")
     fill.Parent           = track
     fill.BackgroundColor3 = C.accent
     fill.BorderSizePixel  = 0
-    fill.Size             = UDim2.new((defaultVal - minVal)/(maxVal - minVal), 0, 1, 0)
-    corner(fill, 99)
+    fill.Size             = UDim2.new((defV-minV)/(maxV-minV), 0, 1, 0)
+    mkCorner(fill, 99)
 
     local knob = Instance.new("TextButton")
     knob.Parent           = track
@@ -439,419 +504,410 @@ local function sliderRow(page, title, minVal, maxVal, defaultVal, step, fmt, onC
     knob.BorderSizePixel  = 0
     knob.Text             = ""
     knob.AutoButtonColor  = false
-    knob.Size             = UDim2.new(0, 22, 0, 22)
-    knob.Position         = UDim2.new((defaultVal - minVal)/(maxVal - minVal), -11, 0.5, -11)
-    corner(knob, 99)
+    knob.Size             = UDim2.new(0, 18, 0, 18)
+    knob.Position         = UDim2.new((defV-minV)/(maxV-minV), -9, 0.5, -9)
+    mkCorner(knob, 99)
 
-    local current = defaultVal
-    local dragging = false
+    local cur     = defV
+    local isDrag  = false
 
-    local function setValue(pct)
+    local function applyPct(pct)
         pct = math.clamp(pct, 0, 1)
-        local raw = minVal + pct * (maxVal - minVal)
-        current = math.round(raw / step) * step
-        current = math.clamp(current, minVal, maxVal)
-        local p = (current - minVal)/(maxVal - minVal)
+        local raw = minV + pct*(maxV-minV)
+        cur = math.round(raw/step)*step
+        cur = math.clamp(cur, minV, maxV)
+        local p = (cur-minV)/(maxV-minV)
         fill.Size     = UDim2.new(p, 0, 1, 0)
-        knob.Position = UDim2.new(p, -11, 0.5, -11)
-        valLabel.Text = fmt(current)
-        onChange(current)
+        knob.Position = UDim2.new(p, -9, 0.5, -9)
+        valLbl.Text   = fmt(cur)
+        onChange(cur)
     end
 
-    local function getPct(inputPos)
+    local function pctFromInput(pos)
         local abs = track.AbsolutePosition
         local sz  = track.AbsoluteSize
-        return (inputPos.X - abs.X) / sz.X
+        return (pos.X - abs.X) / sz.X
     end
 
     knob.InputBegan:Connect(function(inp)
-        if inp.UserInputType == Enum.UserInputType.Touch or inp.UserInputType == Enum.UserInputType.MouseButton1 then
-            dragging = true
+        if inp.UserInputType == Enum.UserInputType.Touch
+        or inp.UserInputType == Enum.UserInputType.MouseButton1 then
+            isDrag = true
         end
     end)
-
-    UIS.InputChanged:Connect(function(inp)
-        if not dragging then return end
-        if inp.UserInputType == Enum.UserInputType.Touch or inp.UserInputType == Enum.UserInputType.MouseMovement then
-            setValue(getPct(inp.Position))
-        end
-    end)
-
-    UIS.InputEnded:Connect(function(inp)
-        if inp.UserInputType == Enum.UserInputType.Touch or inp.UserInputType == Enum.UserInputType.MouseButton1 then
-            dragging = false
-        end
-    end)
-
     track.InputBegan:Connect(function(inp)
-        if inp.UserInputType == Enum.UserInputType.Touch or inp.UserInputType == Enum.UserInputType.MouseButton1 then
-            setValue(getPct(inp.Position))
-            dragging = true
+        if inp.UserInputType == Enum.UserInputType.Touch
+        or inp.UserInputType == Enum.UserInputType.MouseButton1 then
+            isDrag = true
+            applyPct(pctFromInput(inp.Position))
         end
     end)
-
-    return sec
+    UIS.InputChanged:Connect(function(inp)
+        if not isDrag then return end
+        if inp.UserInputType == Enum.UserInputType.Touch
+        or inp.UserInputType == Enum.UserInputType.MouseMovement then
+            applyPct(pctFromInput(inp.Position))
+        end
+    end)
+    UIS.InputEnded:Connect(function(inp)
+        if inp.UserInputType == Enum.UserInputType.Touch
+        or inp.UserInputType == Enum.UserInputType.MouseButton1 then
+            isDrag = false
+        end
+    end)
 end
 
--- Loop count slider (0 = infinite)
-sliderRow(settingsPage,
-    "LOOP COUNT  (0 = infinite)",
-    0, 50, Settings.loopCount, 1,
-    function(v) return v == 0 and "∞  Infinite" or tostring(math.floor(v)) end,
+mkSlider(setScroll, "LOOP COUNT  (0 = ∞)",
+    0, 50, CFG.loopCount, 1,
+    function(v) return v==0 and "∞ Infinite" or tostring(math.floor(v)) end,
     function(v)
-        Settings.loopCount = math.floor(v)
-        loopSettingVal.Text = v == 0 and "∞" or tostring(math.floor(v))
+        CFG.loopCount = math.floor(v)
+        infoValues["Loops"].Text = v==0 and "∞" or tostring(math.floor(v))
     end, 1)
 
--- Playback speed slider
-sliderRow(settingsPage,
-    "PLAYBACK SPEED",
-    0.25, 4.0, Settings.speedMult, 0.25,
+mkSlider(setScroll, "PLAYBACK SPEED",
+    0.25, 4.0, CFG.speedMult, 0.25,
     function(v) return string.format("%.2f×", v) end,
     function(v)
-        Settings.speedMult = v
-        speedVal.Text = string.format("%.2f×", v)
+        CFG.speedMult = v
+        infoValues["Speed"].Text = string.format("%.2f×", v)
     end, 2)
 
--- Start delay slider
-sliderRow(settingsPage,
-    "START DELAY (seconds)",
-    0, 10, Settings.startDelay, 0.5,
+mkSlider(setScroll, "START DELAY (s)",
+    0, 10, CFG.startDelay, 0.5,
     function(v) return string.format("%.1fs", v) end,
-    function(v) Settings.startDelay = v end,
+    function(v) CFG.startDelay = v end,
     3)
 
--- Loop delay slider
-sliderRow(settingsPage,
-    "DELAY BETWEEN LOOPS (seconds)",
-    0, 10, Settings.loopDelay, 0.5,
+mkSlider(setScroll, "LOOP DELAY (s)",
+    0, 10, CFG.loopDelay, 0.5,
     function(v) return string.format("%.1fs", v) end,
-    function(v) Settings.loopDelay = v end,
+    function(v) CFG.loopDelay = v end,
     4)
 
--- Toggle: record mouse clicks on PC
-local pcToggleSection = section(settingsPage, "OPTIONS", 5)
-
-local function toggleRow(parent, text, default, onChange, order)
+-- Toggle: record mouse on PC
+do
+    local optSec = mkSection(setScroll, "OPTIONS", 5)
     local row = Instance.new("Frame")
-    row.Parent               = parent
+    row.Parent               = optSec
     row.BackgroundTransparency = 1
-    row.Size                 = UDim2.new(1, 0, 0, 36)
-    row.LayoutOrder          = order
+    row.Size                 = UDim2.new(1, 0, 0, 30)
+    row.LayoutOrder          = 1
 
     local rl = Instance.new("UIListLayout")
     rl.Parent            = row
     rl.FillDirection     = Enum.FillDirection.Horizontal
     rl.VerticalAlignment = Enum.VerticalAlignment.Center
 
-    local lbl = label(row, text, 13, C.text, Enum.Font.Gotham)
-    lbl.Size = UDim2.new(1, -54, 1, 0)
+    local lbl = mkLabel(row, "Record PC mouse clicks", 12, C.text)
+    lbl.Size = UDim2.new(1, -50, 1, 0)
 
-    local track = Instance.new("TextButton")
-    track.Parent           = row
-    track.Size             = UDim2.new(0, 48, 0, 28)
-    track.BackgroundColor3 = default and C.accent or C.card
-    track.BorderSizePixel  = 0
-    track.Text             = ""
-    track.AutoButtonColor  = false
-    corner(track, 99)
+    local state = CFG.recordMouse
+    local tog = Instance.new("TextButton")
+    tog.Parent           = row
+    tog.Size             = UDim2.new(0, 44, 0, 24)
+    tog.BackgroundColor3 = state and C.accent or C.card
+    tog.BorderSizePixel  = 0
+    tog.Text             = ""
+    tog.AutoButtonColor  = false
+    mkCorner(tog, 99)
 
-    local knob = Instance.new("Frame")
-    knob.Parent           = track
-    knob.BackgroundColor3 = Color3.new(1,1,1)
-    knob.BorderSizePixel  = 0
-    knob.Size             = UDim2.new(0, 22, 0, 22)
-    knob.Position         = default and UDim2.new(1,-25,0.5,-11) or UDim2.new(0,3,0.5,-11)
-    corner(knob, 99)
+    local togKnob = Instance.new("Frame")
+    togKnob.Parent           = tog
+    togKnob.BackgroundColor3 = Color3.new(1,1,1)
+    togKnob.BorderSizePixel  = 0
+    togKnob.Size             = UDim2.new(0, 18, 0, 18)
+    togKnob.Position         = state and UDim2.new(1,-21,0.5,-9) or UDim2.new(0,3,0.5,-9)
+    mkCorner(togKnob, 99)
 
-    local state = default
-    track.MouseButton1Click:Connect(function()
+    tog.MouseButton1Click:Connect(function()
         state = not state
-        tween(track, {BackgroundColor3 = state and C.accent or C.card}, 0.18)
-        tween(knob, {Position = state and UDim2.new(1,-25,0.5,-11) or UDim2.new(0,3,0.5,-11)}, 0.18)
-        onChange(state)
+        CFG.recordMouse = state
+        tw(tog, {BackgroundColor3 = state and C.accent or C.card}, 0.15)
+        tw(togKnob, {Position = state and UDim2.new(1,-21,0.5,-9) or UDim2.new(0,3,0.5,-9)}, 0.15)
     end)
 end
 
-toggleRow(pcToggleSection, "Record mouse clicks (PC)", Settings.recordMouse, function(v)
-    Settings.recordMouse = v
-end, 1)
+-- ═══════════════════════════════════════════
+--  MACROS TAB
+-- ═══════════════════════════════════════════
+local macScroll = mkScroll(tabFrames[3])
 
--- ══════════════════════════════════════════════
---  MACROS PAGE  (Save / Load / Delete)
--- ══════════════════════════════════════════════
-local macrosPage = tabPages[3]
-
-local nameSection = section(macrosPage, "MACRO NAME", 1)
-
+local nameSec = mkSection(macScroll, "NAME", 1)
 local nameBox = Instance.new("TextBox")
-nameBox.Parent               = nameSection
-nameBox.BackgroundColor3     = C.card
-nameBox.BorderSizePixel      = 0
-nameBox.Size                 = UDim2.new(1, 0, 0, 40)
-nameBox.Font                 = Enum.Font.Gotham
-nameBox.PlaceholderText      = "Enter name..."
-nameBox.PlaceholderColor3    = C.muted
-nameBox.Text                 = ""
-nameBox.TextColor3           = C.text
-nameBox.TextSize             = 15
-nameBox.ClearTextOnFocus     = false
-nameBox.LayoutOrder          = 1
-corner(nameBox, 8)
-pad(nameBox, 0, 0, 12, 12)
+nameBox.Parent            = nameSec
+nameBox.BackgroundColor3  = C.card
+nameBox.BorderSizePixel   = 0
+nameBox.Size              = UDim2.new(1, 0, 0, 32)
+nameBox.Font              = Enum.Font.Gotham
+nameBox.PlaceholderText   = "Macro name…"
+nameBox.PlaceholderColor3 = C.muted
+nameBox.Text              = ""
+nameBox.TextColor3        = C.text
+nameBox.TextSize          = 13
+nameBox.ClearTextOnFocus  = false
+nameBox.LayoutOrder       = 1
+mkCorner(nameBox, 7)
+mkPad(nameBox, 0, 0, 10, 10)
 
-local savLoadSection = section(macrosPage, nil, 2)
-local savLoadGrid = Instance.new("Frame")
-savLoadGrid.Parent               = savLoadSection
-savLoadGrid.BackgroundTransparency = 1
-savLoadGrid.Size                 = UDim2.new(1, 0, 0, 50)
-savLoadGrid.LayoutOrder          = 1
-local slg = Instance.new("UIGridLayout")
-slg.Parent      = savLoadGrid
-slg.CellSize    = UDim2.new(0.5, -5, 0, 50)
-slg.CellPadding = UDim2.new(0, 10, 0, 0)
+local actionSec = mkSection(macScroll, nil, 2)
+do
+    local g = Instance.new("Frame")
+    g.Parent               = actionSec
+    g.BackgroundTransparency = 1
+    g.Size                 = UDim2.new(1, 0, 0, 46)
+    g.LayoutOrder          = 1
+    local gl = Instance.new("UIGridLayout")
+    gl.Parent      = g
+    gl.CellSize    = UDim2.new(0.5, -4, 0, 46)
+    gl.CellPadding = UDim2.new(0, 8, 0, 0)
 
-local saveBtn = makeButton(savLoadGrid, "💾  Save",  C.accent,                        nil, 1)
-local loadBtn = makeButton(savLoadGrid, "📂  Load",  Color3.fromRGB(120, 70, 220), nil, 2)
+    local saveBtn = mkBtn(g, "💾  Save", C.accent, nil, 1)
+    local loadBtn = mkBtn(g, "📂  Load", Color3.fromRGB(120,70,220), nil, 2)
 
-local macroListSection = section(macrosPage, "SAVED MACROS", 3)
+    saveBtn.MouseButton1Click:Connect(function()
+        local name = nameBox.Text
+        if name == "" then MS:SetStatus("Enter a name!", C.red); return end
+        MS.macros[name] = {inputs = MS.inputs}
+        MS:SetStatus("Saved: "..name, C.accent)
+        MS:RefreshMacroList()
+    end)
+    loadBtn.MouseButton1Click:Connect(function()
+        local name = nameBox.Text
+        if not MS.macros[name] then MS:SetStatus("Not found!", C.red); return end
+        MS.inputs = MS.macros[name].inputs
+        MS:UpdateInfo()
+        MS:SetStatus("Loaded: "..name, Color3.fromRGB(160,100,255))
+        switchTab(1)
+    end)
+end
 
-local macroScrollFrame = Instance.new("ScrollingFrame")
-macroScrollFrame.Parent               = macroListSection
-macroScrollFrame.BackgroundTransparency = 1
-macroScrollFrame.BorderSizePixel      = 0
-macroScrollFrame.Size                 = UDim2.new(1, 0, 0, 180)
-macroScrollFrame.ScrollBarThickness   = 3
-macroScrollFrame.ScrollBarImageColor3 = C.muted
-macroScrollFrame.CanvasSize           = UDim2.new(0, 0, 0, 0)
-macroScrollFrame.AutomaticCanvasSize  = Enum.AutomaticSize.Y
-macroScrollFrame.LayoutOrder          = 1
+local listSec = mkSection(macScroll, "SAVED", 3)
+local macListScroll = Instance.new("ScrollingFrame")
+macListScroll.Parent               = listSec
+macListScroll.BackgroundTransparency = 1
+macListScroll.BorderSizePixel      = 0
+macListScroll.Size                 = UDim2.new(1, 0, 0, 150)
+macListScroll.ScrollBarThickness   = 3
+macListScroll.ScrollBarImageColor3 = C.muted
+macListScroll.CanvasSize           = UDim2.new(0, 0, 0, 0)
+macListScroll.AutomaticCanvasSize  = Enum.AutomaticSize.Y
+macListScroll.LayoutOrder          = 1
 
-local macroListLayout = Instance.new("UIListLayout")
-macroListLayout.Parent   = macroScrollFrame
-macroListLayout.Padding  = UDim.new(0, 6)
-macroListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+local macListLayout = Instance.new("UIListLayout")
+macListLayout.Parent   = macListScroll
+macListLayout.Padding  = UDim.new(0, 4)
+macListLayout.SortOrder = Enum.SortOrder.LayoutOrder
 
--- ══════════════════════════════════════════════
---  FAB (floating action button when minimised)
--- ══════════════════════════════════════════════
+-- ═══════════════════════════════════════════
+--  MINIMIZE / FAB
+-- ═══════════════════════════════════════════
 local fab = Instance.new("TextButton")
 fab.Name             = "FAB"
-fab.Parent           = screenGui
+fab.Parent           = gui
 fab.BackgroundColor3 = C.accent
 fab.BorderSizePixel  = 0
-fab.Position         = UDim2.new(0, 14, 0.84, 0)
-fab.Size             = UDim2.new(0, 54, 0, 54)
+fab.Position         = UDim2.new(0, 20, 0, 60)
+fab.Size             = UDim2.new(0, 46, 0, 46)
 fab.Font             = Enum.Font.GothamBold
 fab.Text             = "M"
 fab.TextColor3       = C.text
-fab.TextSize         = 20
+fab.TextSize         = 18
 fab.Visible          = false
-corner(fab, 99)
+fab.AutoButtonColor  = false
+mkCorner(fab, 99)
+tw(fab, {BackgroundColor3 = C.aHi}, 0) -- start
+tw(fab, {BackgroundColor3 = C.accent}, 0)
 
--- FAB draggable
-local fabDragging, fabDragStart, fabStartPos = false, nil, nil
-fab.InputBegan:Connect(function(inp)
-    if inp.UserInputType == Enum.UserInputType.Touch or inp.UserInputType == Enum.UserInputType.MouseButton1 then
-        fabDragging   = true
-        fabDragStart  = inp.Position
-        fabStartPos   = fab.Position
-    end
-end)
-UIS.InputChanged:Connect(function(inp)
-    if not fabDragging then return end
-    if inp.UserInputType == Enum.UserInputType.Touch or inp.UserInputType == Enum.UserInputType.MouseMovement then
-        local delta = inp.Position - fabDragStart
-        fab.Position = UDim2.new(
-            fabStartPos.X.Scale, fabStartPos.X.Offset + delta.X,
-            fabStartPos.Y.Scale, fabStartPos.Y.Offset + delta.Y
-        )
-    end
-end)
-UIS.InputEnded:Connect(function(inp)
-    if inp.UserInputType == Enum.UserInputType.Touch or inp.UserInputType == Enum.UserInputType.MouseButton1 then
-        fabDragging = false
-    end
-end)
+-- FAB drag
+do
+    local dragging, dragInput, dragStart, startPos = false, nil, nil, nil
+    fab.InputBegan:Connect(function(inp)
+        if inp.UserInputType == Enum.UserInputType.Touch
+        or inp.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging  = true
+            dragInput = inp
+            dragStart = inp.Position
+            startPos  = fab.Position
+        end
+    end)
+    UIS.InputChanged:Connect(function(inp)
+        if not dragging then return end
+        if inp.UserInputType == Enum.UserInputType.Touch
+        or inp.UserInputType == Enum.UserInputType.MouseMovement then
+            local d = inp.Position - dragStart
+            fab.Position = UDim2.new(0, startPos.X.Offset+d.X, 0, startPos.Y.Offset+d.Y)
+        end
+    end)
+    UIS.InputEnded:Connect(function(inp)
+        if inp == dragInput then dragging = false end
+    end)
+end
 
--- ══════════════════════════════════════════════
---  PANEL SHOW / HIDE
--- ══════════════════════════════════════════════
-local panelOpen = true
-
-local function openPanel()
-    panelOpen = true
+local winOpen = true
+local function openWin()
+    winOpen = true
+    win.Visible = true
     fab.Visible = false
-    tween(mainFrame, {Position = SHEET_Y_OPEN}, 0.35, Enum.EasingStyle.Quint)
+    tw(win, {Size = UDim2.new(0, WIN_W, 0, WIN_H)}, 0.25, Enum.EasingStyle.Back)
+end
+local function closeWin()
+    winOpen = false
+    tw(win, {Size = UDim2.new(0, WIN_W, 0, 0)}, 0.2)
+    task.delay(0.2, function()
+        win.Visible = false
+        fab.Visible = true
+        fab.Position = UDim2.new(0, win.Position.X.Offset, 0, win.Position.Y.Offset)
+    end)
 end
 
-local function closePanel()
-    panelOpen = false
-    tween(mainFrame, {Position = SHEET_Y_CLOSED}, 0.3, Enum.EasingStyle.Quint, Enum.EasingDirection.In)
-    task.delay(0.3, function() fab.Visible = true end)
+minBtn.MouseButton1Click:Connect(closeWin)
+closeBtn.MouseButton1Click:Connect(function() gui:Destroy() end)
+fab.MouseButton1Click:Connect(openWin)
+
+-- ═══════════════════════════════════════════
+--  MACRO SYSTEM METHODS
+-- ═══════════════════════════════════════════
+function MS:SetStatus(txt, col)
+    _G._DMstxt.Text      = txt
+    local c = col or C.green
+    tw(_G._DMstxt, {TextColor3 = c}, 0.15)
+    tw(_G._DMdot,  {BackgroundColor3 = c}, 0.15)
 end
 
--- Swipe down on pill to close
-local pillDragY = nil
-pill.InputBegan:Connect(function(inp)
-    if inp.UserInputType == Enum.UserInputType.Touch or inp.UserInputType == Enum.UserInputType.MouseButton1 then
-        pillDragY = inp.Position.Y
-    end
-end)
-pill.InputEnded:Connect(function(inp)
-    if pillDragY then
-        if inp.Position.Y - pillDragY > 35 then closePanel() end
-        pillDragY = nil
-    end
-end)
-
-fab.MouseButton1Click:Connect(openPanel)
-
--- Also allow clicking pill area to close if already open
-pill.MouseButton1Click:Connect(function()
-    if panelOpen then closePanel() else openPanel() end
-end)
-
--- ══════════════════════════════════════════════
---  MACRO CORE LOGIC
--- ══════════════════════════════════════════════
-
-function MacroSystem:StartRecording()
-    if self.isPlaying then return end
-    self.isRecording        = true
-    self.recordedInputs     = {}
-    self.recordingStartTime = tick()
-    updateStatus("Recording…", C.red)
-    recordBtn:SetColor(Color3.fromRGB(140, 30, 30))
-    recordBtn.Text = "⏹  Stop Rec"
-    inputCountVal.Text = "0"
-    durationVal.Text   = "0.00s"
+function MS:SetProgress(pct)
+    tw(_G._DMfill, {Size = UDim2.new(math.clamp(pct,0,1), 0, 1, 0)}, 0.1)
 end
 
-function MacroSystem:StopRecording()
-    if not self.isRecording then return end
-    self.isRecording = false
-    local dur = self.recordedInputs[#self.recordedInputs] and self.recordedInputs[#self.recordedInputs].time or 0
-    updateStatus("Recorded " .. #self.recordedInputs .. " inputs", C.yellow)
-    recordBtn:SetColor(C.red)
-    recordBtn.Text = "⏺  Record"
-    inputCountVal.Text = tostring(#self.recordedInputs)
-    durationVal.Text   = string.format("%.2fs", dur)
-    setProgress(0)
+function MS:UpdateInfo()
+    local n   = #self.inputs
+    local dur = n > 0 and self.inputs[n].time or 0
+    infoValues["Inputs"].Text   = tostring(n)
+    infoValues["Duration"].Text = string.format("%.2fs", dur)
 end
 
-function MacroSystem:StopPlayback()
-    self.stopRequested = true
-    self.isPlaying     = false
-    updateStatus("Stopped", C.muted)
-    playBtn.Text = "▶  Play"
-    playBtn:SetColor(C.green)
-    loopInfoLabel.Text = ""
-    setProgress(0)
+function MS:StartRec()
+    if self.playing then return end
+    self.recording    = true
+    self.inputs       = {}
+    self.recStartTime = tick()
+    self:SetStatus("Recording…", C.red)
+    _G._DMrecBtn:Recolor(Color3.fromRGB(140,30,30))
+    _G._DMrecBtn.Text = "⏹  Stop Rec"
+    self:UpdateInfo()
 end
 
-function MacroSystem:PlayOnce(inputs, totalDuration)
-    local startT = tick()
-    for i, inp in ipairs(inputs) do
-        if self.stopRequested then return false end
-        local targetT = startT + (inp.time / Settings.speedMult)
-        local now = tick()
-        if targetT > now then task.wait(targetT - now) end
-        if self.stopRequested then return false end
+function MS:StopRec()
+    if not self.recording then return end
+    self.recording = false
+    self:UpdateInfo()
+    self:SetStatus("Recorded "..#self.inputs.." inputs", C.yellow)
+    _G._DMrecBtn:Recolor(C.red)
+    _G._DMrecBtn.Text = "⏺  Record"
+    self:SetProgress(0)
+end
 
-        -- Simulate input
-        if inp.type == "TouchStart" or inp.type == "MouseDown" then
-            -- Fire a VirtualInputManager tap if available
-            if VirtualInputManager then
-                pcall(function()
-                    VirtualInputManager:SendMouseButtonEvent(inp.position.X, inp.position.Y, 0, true, game, 0)
-                end)
-            end
-        elseif inp.type == "TouchEnd" or inp.type == "MouseUp" then
-            if VirtualInputManager then
-                pcall(function()
-                    VirtualInputManager:SendMouseButtonEvent(inp.position.X, inp.position.Y, 0, false, game, 0)
-                end)
-            end
-        elseif inp.type == "TouchMoved" or inp.type == "MouseMoved" then
-            if VirtualInputManager then
-                pcall(function()
-                    VirtualInputManager:SendMouseMoveEvent(inp.position.X, inp.position.Y, game)
-                end)
-            end
+function MS:StopPlay()
+    self.stopReq  = true
+    self.playing  = false
+    self:SetStatus("Stopped", C.muted)
+    _G._DMplayBtn.Text = "▶  Play"
+    _G._DMplayBtn:Recolor(C.green)
+    _G._DMloopLbl.Text = ""
+    self:SetProgress(0)
+end
+
+-- Core playback: replay one pass through recorded inputs
+function MS:PlayOnce(inputs, totalDur)
+    local base = tick()
+    for _, ev in ipairs(inputs) do
+        if self.stopReq then return false end
+
+        -- Wait until this event's timestamp (adjusted for speed)
+        local target = base + (ev.time / CFG.speedMult)
+        local now    = tick()
+        if target > now then
+            task.wait(target - now)
         end
 
-        -- Update progress
-        if totalDuration > 0 then
-            setProgress(inp.time / totalDuration)
+        if self.stopReq then return false end
+
+        -- ── Replay event ──────────────────────
+        if VIM then
+            pcall(function()
+                if ev.type == "TouchStart" or ev.type == "MouseDown" then
+                    VIM:SendMouseButtonEvent(ev.pos.X, ev.pos.Y, 0, true,  game, 0)
+                elseif ev.type == "TouchEnd" or ev.type == "MouseUp" then
+                    VIM:SendMouseButtonEvent(ev.pos.X, ev.pos.Y, 0, false, game, 0)
+                elseif ev.type == "TouchMoved" or ev.type == "MouseMoved" then
+                    VIM:SendMouseMoveEvent(ev.pos.X, ev.pos.Y, game)
+                end
+            end)
+        end
+
+        -- Update progress bar
+        if totalDur > 0 then
+            self:SetProgress(ev.time / totalDur)
         end
     end
     return true
 end
 
-function MacroSystem:Play()
-    if self.isRecording then self:StopRecording() end
-    if self.isPlaying   then self:StopPlayback(); return end
-    if #self.recordedInputs == 0 then
-        updateStatus("Nothing to play!", C.red)
-        return
+function MS:Play()
+    if self.recording then self:StopRec() end
+    if self.playing    then self:StopPlay(); return end
+    if #self.inputs == 0 then
+        self:SetStatus("Nothing to play!", C.red); return
     end
 
-    self.isPlaying     = true
-    self.stopRequested = false
-    playBtn.Text = "⏸  Stop"
-    playBtn:SetColor(C.yellow)
+    self.playing  = true
+    self.stopReq  = false
+    _G._DMplayBtn.Text = "⏸  Stop"
+    _G._DMplayBtn:Recolor(C.yellow)
 
-    local inputs = self.recordedInputs
-    local totalDuration = inputs[#inputs] and inputs[#inputs].time or 0
+    local inputs   = self.inputs
+    local totalDur = inputs[#inputs] and inputs[#inputs].time or 0
 
     task.spawn(function()
         -- Start delay
-        if Settings.startDelay > 0 then
-            updateStatus(string.format("Starting in %.1fs…", Settings.startDelay), C.yellow)
-            task.wait(Settings.startDelay)
-            if self.stopRequested then
-                self:StopPlayback(); return
-            end
+        if CFG.startDelay > 0 then
+            self:SetStatus(string.format("Starting in %.1fs…", CFG.startDelay), C.yellow)
+            task.wait(CFG.startDelay)
+            if self.stopReq then self:StopPlay(); return end
         end
 
-        local maxLoops = Settings.loopCount == 0 and math.huge or Settings.loopCount
+        local maxLoops = CFG.loopCount == 0 and math.huge or CFG.loopCount
         local loop = 0
 
-        while loop < maxLoops and not self.stopRequested do
+        while loop < maxLoops and not self.stopReq do
             loop = loop + 1
-            self.currentLoopsDone = loop
 
-            if Settings.loopCount == 0 then
-                loopInfoLabel.Text = string.format("Loop %d / ∞", loop)
-            else
-                loopInfoLabel.Text = string.format("Loop %d / %d", loop, Settings.loopCount)
-            end
-            updateStatus("Playing…", C.green)
+            _G._DMloopLbl.Text = CFG.loopCount == 0
+                and string.format("Loop %d / ∞", loop)
+                or  string.format("Loop %d / %d", loop, CFG.loopCount)
 
-            local ok = self:PlayOnce(inputs, totalDuration)
-            if not ok or self.stopRequested then break end
+            self:SetStatus("Playing…", C.green)
 
-            setProgress(1)
+            local ok = self:PlayOnce(inputs, totalDur)
+            if not ok or self.stopReq then break end
 
-            if loop < maxLoops and Settings.loopDelay > 0 and not self.stopRequested then
-                updateStatus(string.format("Loop delay %.1fs…", Settings.loopDelay), C.yellow)
-                task.wait(Settings.loopDelay)
+            self:SetProgress(1)
+
+            if loop < maxLoops and CFG.loopDelay > 0 and not self.stopReq then
+                self:SetStatus(string.format("Loop pause %.1fs…", CFG.loopDelay), C.yellow)
+                task.wait(CFG.loopDelay)
             end
         end
 
-        if not self.stopRequested then
-            self:StopPlayback()
-            updateStatus("Done  (" .. loop .. " loop" .. (loop == 1 and "" or "s") .. ")", C.green)
+        if not self.stopReq then
+            self:StopPlay()
+            self:SetStatus(string.format("Done (%d loop%s)", loop, loop==1 and "" or "s"), C.green)
         end
     end)
 end
 
--- ══════════════════════════════════════════════
---  REFRESH MACRO LIST
--- ══════════════════════════════════════════════
-function MacroSystem:RefreshList()
-    for _, c in ipairs(macroScrollFrame:GetChildren()) do
+function MS:RefreshMacroList()
+    for _, c in ipairs(macListScroll:GetChildren()) do
         if not c:IsA("UIListLayout") then c:Destroy() end
     end
 
@@ -859,179 +915,96 @@ function MacroSystem:RefreshList()
     for name, data in pairs(self.macros) do
         idx = idx + 1
         local row = Instance.new("Frame")
-        row.Parent           = macroScrollFrame
+        row.Parent           = macListScroll
         row.BackgroundColor3 = C.card
         row.BorderSizePixel  = 0
-        row.Size             = UDim2.new(1, 0, 0, 46)
+        row.Size             = UDim2.new(1, 0, 0, 38)
         row.LayoutOrder      = idx
-        corner(row, 8)
+        mkCorner(row, 7)
 
         local rl = Instance.new("UIListLayout")
         rl.Parent            = row
         rl.FillDirection     = Enum.FillDirection.Horizontal
         rl.VerticalAlignment = Enum.VerticalAlignment.Center
-        pad(row, 0, 0, 12, 8)
+        mkPad(row, 0, 0, 10, 6)
 
-        local nameLbl = Instance.new("TextLabel")
-        nameLbl.Parent               = row
-        nameLbl.BackgroundTransparency = 1
-        nameLbl.Text                 = name
-        nameLbl.Font                 = Enum.Font.GothamBold
-        nameLbl.TextSize             = 13
-        nameLbl.TextColor3           = C.text
-        nameLbl.TextXAlignment       = Enum.TextXAlignment.Left
-        nameLbl.Size                 = UDim2.new(1, -90, 1, 0)
+        local nLbl = mkLabel(row, name, 12, C.text, Enum.Font.GothamBold)
+        nLbl.Size = UDim2.new(1, -80, 1, 0)
 
-        local subLbl = Instance.new("TextLabel")
-        subLbl.Parent               = row
-        subLbl.BackgroundTransparency = 1
-        subLbl.Text                 = tostring(#data.inputs) .. " inputs"
-        subLbl.Font                 = Enum.Font.Gotham
-        subLbl.TextSize             = 11
-        subLbl.TextColor3           = C.subtext
-        subLbl.TextXAlignment       = Enum.TextXAlignment.Right
-        subLbl.Size                 = UDim2.new(0, 70, 1, 0)
+        local cntLbl = mkLabel(row, #data.inputs.." ev", 11, C.sub, Enum.Font.Gotham, Enum.TextXAlignment.Right)
+        cntLbl.Size = UDim2.new(0, 46, 1, 0)
 
-        local delBtn = Instance.new("TextButton")
-        delBtn.Parent           = row
-        delBtn.BackgroundColor3 = Color3.fromRGB(80, 30, 30)
-        delBtn.BorderSizePixel  = 0
-        delBtn.Text             = "✕"
-        delBtn.Font             = Enum.Font.GothamBold
-        delBtn.TextColor3       = C.red
-        delBtn.TextSize         = 14
-        delBtn.Size             = UDim2.new(0, 28, 0, 28)
-        delBtn.AutoButtonColor  = false
-        corner(delBtn, 6)
+        local del = mkBtn(row, "✕", Color3.fromRGB(70,25,25), C.red)
+        del.Size = UDim2.new(0, 26, 0, 26)
 
-        -- Tap row to select
-        local rowBtn = Instance.new("TextButton")
-        rowBtn.Parent             = row
-        rowBtn.BackgroundTransparency = 1
-        rowBtn.Size               = UDim2.new(0, 0, 0, 0) -- invisible; we use the row itself
-        rowBtn.Text               = ""
-
+        -- tap row = load
         row.InputBegan:Connect(function(inp)
-            if inp.UserInputType == Enum.UserInputType.Touch or inp.UserInputType == Enum.UserInputType.MouseButton1 then
+            if inp.UserInputType == Enum.UserInputType.Touch
+            or inp.UserInputType == Enum.UserInputType.MouseButton1 then
                 nameBox.Text = name
-                MacroSystem:LoadMacro(name)
+                MS.inputs = data.inputs
+                MS:UpdateInfo()
+                MS:SetStatus("Loaded: "..name, Color3.fromRGB(160,100,255))
+                switchTab(1)
             end
         end)
 
-        delBtn.MouseButton1Click:Connect(function()
-            self.macros[name] = nil
-            self:RefreshList()
+        del.MouseButton1Click:Connect(function()
+            MS.macros[name] = nil
+            MS:RefreshMacroList()
         end)
     end
 
     if idx == 0 then
-        local empty = label(macroScrollFrame, "No saved macros", 13, C.muted, Enum.Font.Gotham, Enum.TextXAlignment.Center)
-        empty.Size = UDim2.new(1, 0, 0, 40)
+        local e = mkLabel(macListScroll, "No saved macros", 12, C.muted, Enum.Font.Gotham, Enum.TextXAlignment.Center)
+        e.Size = UDim2.new(1, 0, 0, 36)
     end
 end
 
-function MacroSystem:SaveMacro(name)
-    if name == "" then updateStatus("Enter a name first!", C.red); return end
-    self.macros[name] = {inputs = self.recordedInputs}
-    updateStatus("Saved: " .. name, C.accent)
-    self:RefreshList()
+-- ═══════════════════════════════════════════
+--  INPUT RECORDING HOOKS
+-- ═══════════════════════════════════════════
+local function rec(evType, pos)
+    if not MS.recording then return end
+    -- ignore inputs that land inside the UI window
+    local absPos = win.AbsolutePosition
+    local absSize = win.AbsoluteSize
+    if pos.X >= absPos.X and pos.X <= absPos.X + absSize.X
+    and pos.Y >= absPos.Y and pos.Y <= absPos.Y + absSize.Y then
+        return
+    end
+    local t = tick() - MS.recStartTime
+    table.insert(MS.inputs, {type = evType, pos = pos, time = t})
+    MS:UpdateInfo()
 end
 
-function MacroSystem:LoadMacro(name)
-    if not self.macros[name] then updateStatus("Not found!", C.red); return end
-    self.recordedInputs = self.macros[name].inputs
-    local dur = self.recordedInputs[#self.recordedInputs] and self.recordedInputs[#self.recordedInputs].time or 0
-    inputCountVal.Text = tostring(#self.recordedInputs)
-    durationVal.Text   = string.format("%.2fs", dur)
-    updateStatus("Loaded: " .. name, Color3.fromRGB(160, 100, 255))
-    switchTab(1)
-end
+-- Touch
+UIS.TouchStarted:Connect(function(touch, _) rec("TouchStart",  touch.Position) end)
+UIS.TouchMoved:Connect(  function(touch, _) rec("TouchMoved",  touch.Position) end)
+UIS.TouchEnded:Connect(  function(touch, _) rec("TouchEnd",    touch.Position) end)
 
--- ══════════════════════════════════════════════
---  INPUT RECORDING
--- ══════════════════════════════════════════════
-local function recordInput(inputType, pos)
-    if not MacroSystem.isRecording then return end
-    local t = tick() - MacroSystem.recordingStartTime
-    table.insert(MacroSystem.recordedInputs, {
-        type     = inputType,
-        position = pos,
-        time     = t,
-    })
-    inputCountVal.Text = tostring(#MacroSystem.recordedInputs)
-    durationVal.Text   = string.format("%.2fs", t)
-end
-
--- Touch events
-UIS.TouchStarted:Connect(function(touch, processed)
-    recordInput("TouchStart", touch.Position)
-end)
-UIS.TouchMoved:Connect(function(touch, processed)
-    recordInput("TouchMoved", touch.Position)
-end)
-UIS.TouchEnded:Connect(function(touch, processed)
-    recordInput("TouchEnd", touch.Position)
-end)
-
--- Mouse events (PC fallback / dual support)
-UIS.InputBegan:Connect(function(inp, processed)
-    if inp.UserInputType == Enum.UserInputType.MouseButton1 and Settings.recordMouse then
-        recordInput("MouseDown", inp.Position)
+-- Mouse (PC)
+UIS.InputBegan:Connect(function(inp, _)
+    if inp.UserInputType == Enum.UserInputType.MouseButton1 and CFG.recordMouse then
+        rec("MouseDown", inp.Position)
     end
 end)
 UIS.InputChanged:Connect(function(inp)
-    if inp.UserInputType == Enum.UserInputType.MouseMovement and Settings.recordMouse and MacroSystem.isRecording then
-        recordInput("MouseMoved", inp.Position)
+    if inp.UserInputType == Enum.UserInputType.MouseMovement
+    and CFG.recordMouse and MS.recording then
+        rec("MouseMoved", inp.Position)
     end
 end)
 UIS.InputEnded:Connect(function(inp)
-    if inp.UserInputType == Enum.UserInputType.MouseButton1 and Settings.recordMouse then
-        recordInput("MouseUp", inp.Position)
+    if inp.UserInputType == Enum.UserInputType.MouseButton1 and CFG.recordMouse then
+        rec("MouseUp", inp.Position)
     end
 end)
 
--- ══════════════════════════════════════════════
---  BUTTON CONNECTIONS
--- ══════════════════════════════════════════════
-recordBtn.MouseButton1Click:Connect(function()
-    if MacroSystem.isRecording then
-        MacroSystem:StopRecording()
-    else
-        MacroSystem:StartRecording()
-    end
-end)
-
-playBtn.MouseButton1Click:Connect(function()
-    MacroSystem:Play()
-end)
-
-stopBtn.MouseButton1Click:Connect(function()
-    MacroSystem:StopRecording()
-    MacroSystem:StopPlayback()
-end)
-
-clearBtn.MouseButton1Click:Connect(function()
-    MacroSystem:StopRecording()
-    MacroSystem:StopPlayback()
-    MacroSystem.recordedInputs = {}
-    inputCountVal.Text = "0"
-    durationVal.Text   = "0.00s"
-    setProgress(0)
-    updateStatus("Cleared", C.orange)
-end)
-
-saveBtn.MouseButton1Click:Connect(function()
-    MacroSystem:SaveMacro(nameBox.Text)
-end)
-
-loadBtn.MouseButton1Click:Connect(function()
-    MacroSystem:LoadMacro(nameBox.Text)
-end)
-
--- ══════════════════════════════════════════════
+-- ═══════════════════════════════════════════
 --  INIT
--- ══════════════════════════════════════════════
-MacroSystem:RefreshList()
-updateStatus("Ready")
-loopSettingVal.Text = "1"
-speedVal.Text       = "1.00×"
+-- ═══════════════════════════════════════════
+MS:RefreshMacroList()
+MS:SetStatus("Ready", C.green)
+infoValues["Loops"].Text = "1"
+infoValues["Speed"].Text = "1.00×"
