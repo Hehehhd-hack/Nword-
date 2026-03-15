@@ -1,0 +1,87 @@
+-- Services
+local UserInputService = game:GetService("UserInputService")
+local Players = game:GetService("Players")
+
+-- Variables
+local player = Players.LocalPlayer
+local recording = {}
+local isRecording = false
+local isPlaying = false
+local lastInputTime = 0
+
+-- UI Setup
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "MacroRecorder"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = player:WaitForChild("PlayerGui")
+
+local MainFrame = Instance.new("Frame")
+MainFrame.Size = UDim2.new(0, 220, 0, 160)
+MainFrame.Position = UDim2.new(0.5, -110, 0.8, -80)
+MainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+MainFrame.Parent = ScreenGui
+
+local UICorner = Instance.new("UICorner")
+UICorner.CornerRadius = UDim.new(0, 8)
+UICorner.Parent = MainFrame
+
+local StatusLabel = Instance.new("TextLabel")
+StatusLabel.Size = UDim2.new(1, 0, 0, 30)
+StatusLabel.Position = UDim2.new(0, 0, 0, 0)
+StatusLabel.BackgroundTransparency = 1
+StatusLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+StatusLabel.Font = Enum.Font.GothamBold
+StatusLabel.TextSize = 16
+StatusLabel.Text = "Status: Ready"
+StatusLabel.Parent = MainFrame
+
+local RecordBtn = Instance.new("TextButton")
+RecordBtn.Size = UDim2.new(0, 90, 0, 35)
+RecordBtn.Position = UDim2.new(0, 15, 0, 40)
+RecordBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 255)
+RecordBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+RecordBtn.Text = "REC"
+RecordBtn.Font = Enum.Font.GothamBold
+RecordBtn.TextSize = 18
+RecordBtn.Parent = MainFrame
+
+local PlayBtn = Instance.new("TextButton")
+PlayBtn.Size = UDim2.new(0, 90, 0, 35)
+PlayBtn.Position = UDim2.new(0, 115, 0, 40)
+PlayBtn.BackgroundColor3 = Color3.fromRGB(0, 200, 100)
+PlayBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+PlayBtn.Text = "PLAY"
+PlayBtn.Font = Enum.Font.GothamBold
+PlayBtn.TextSize = 18
+PlayBtn.Parent = MainFrame
+
+local ClearBtn = Instance.new("TextButton")
+ClearBtn.Size = UDim2.new(0, 90, 0, 35)
+ClearBtn.Position = UDim2.new(0, 15, 0, 85)
+ClearBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+ClearBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+ClearBtn.Text = "CLEAR"
+ClearBtn.Font = Enum.Font.GothamBold
+ClearBtn.TextSize = 18
+ClearBtn.Parent = MainFrame
+
+local StopBtn = Instance.new("TextButton")
+StopBtn.Size = UDim2.new(0, 90, 0, 35)
+StopBtn.Position = UDim2.new(0, 115, 0, 85)
+StopBtn.BackgroundColor3 = Color3.fromRGB(150, 150, 150)
+StopBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+StopBtn.Text = "STOP"
+StopBtn.Font = Enum.Font.GothamBold
+StopBtn.TextSize = 18
+StopBtn.Parent = MainFrame
+
+-- Logic
+RecordBtn.MouseButton1Click:Connect(function()
+    if isPlaying then return end
+    recording = {}
+    isRecording = true
+    lastInputTime = tick()
+    StatusLabel.Text = "Status: Recording..."
+    Task.spawn(function()
+        while isRecording do
+            task.wait(0.1
